@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../controllers/chat_controller.dart';
 import '../../controllers/session_controller.dart';
@@ -31,34 +33,37 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen>
+    with SingleTickerProviderStateMixin {
   late final TextEditingController _inputController;
   late final ScrollController _scrollController;
-  bool _landingAnchoredTop = false;
-  bool _landingVisible = true;
+  late final AnimationController _introController;
+  late final Animation<double> _blurAnimation;
+  late final Animation<double> _fadeAnimation;
+  final List<_PendingAttachment> _pendingAttachments = [];
 
   @override
   void initState() {
     super.initState();
     _inputController = TextEditingController();
     _scrollController = ScrollController();
+    _introController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    _blurAnimation = Tween<double>(begin: 12, end: 0).animate(
+      CurvedAnimation(parent: _introController, curve: Curves.easeOutCubic),
+    );
+    _fadeAnimation = CurvedAnimation(
+      parent: _introController,
+      curve: Curves.easeOutCubic,
+    );
     widget.chatController.addListener(_scrollToBottomOnUpdate);
     unawaited(widget.localModelController.initialise());
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted) {
-          setState(() {
-            _landingAnchoredTop = true;
-          });
-        }
-      });
-      Future.delayed(const Duration(milliseconds: 1100), () {
-        if (mounted) {
-          setState(() {
-            _landingVisible = false;
-          });
-        }
-      });
+      if (mounted) {
+        _introController.forward();
+      }
     });
   }
 
@@ -74,6 +79,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     widget.chatController.removeListener(_scrollToBottomOnUpdate);
+    _introController.dispose();
     _inputController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -92,9 +98,178 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _handleSend() async {
-    final text = _inputController.text;
+    final rawText = _inputController.text;
+    final attachments = List<_PendingAttachment>.from(_pendingAttachments);
+    final hasText = rawText.trim().isNotEmpty;
+    if (!hasText && attachments.isEmpty) {
+      return;
+    }
+
+    final composed = _composeMessage(rawText, attachments);
+    final settings = widget.settingsController;
+    final isStarMode = settings.appMode == AppMode.star;
+    final localActive = widget.localModelController.activeModelState;
+
+    if (isStarMode &&
+        (localActive == null ||
+            localActive.status != LocalModelStatus.installed)) {
+      _showSnackBar(
+        'Yerel modeli kullanmak için Modelleri yönet bölümünden bir model indirip etkinleştirin.',
+      );
+      return;
+    }
+
     _inputController.clear();
-    await widget.chatController.sendMessage(text);
+    setState(() => _pendingAttachments.clear());
+
+    if (isStarMode) {
+      await widget.chatController.sendMessage(
+        composed,
+        forceOffline: true,
+        offlineModelName: localActive!.descriptor.name,
+      );
+    } else {
+      await widget.chatController.sendMessage(composed);
+    }
+  }
+
+  Future<void> _handleShare() async {
+    final status = await widget.chatController.shareCurrentSession();
+    if (!mounted) return;
+    if (status == null) {
+      _showSnackBar('Paylaşılacak sohbet bulunamadı.');
+      return;
+    }
+    switch (status) {
+      case ShareResultStatus.success:
+        break;
+      case ShareResultStatus.dismissed:
+        _showSnackBar('Paylaşım kapatıldı.');
+        break;
+      case ShareResultStatus.unavailable:
+        _showSnackBar(
+          'Paylaşım desteklenmiyor, sohbet metin olarak kopyalandı.',
+        );
+        break;
+    }
+  }
+
+  Future<void> _openLocalModels() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (context) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 20,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+          ),
+          child: _StarModePanel(
+            controller: widget.localModelController,
+            onActivate: widget.localModelController.setActiveModel,
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _pickAttachments() async {
+    const maxAttachments = 5;
+    if (_pendingAttachments.length >= maxAttachments) {
+      _showSnackBar('En fazla 5 dosya eklenebilir.');
+      return;
+    }
+    try {
+      final result = await FilePicker.platform.pickFiles(allowMultiple: true);
+      if (result == null) return;
+      final files = result.files.where((file) => file.path != null);
+      if (files.isEmpty) {
+        _showSnackBar('Seçilen dosya okunamadı.');
+        return;
+      }
+      final additions = <_PendingAttachment>[];
+      for (final file in files) {
+        final path = file.path;
+        if (path == null) {
+          continue;
+        }
+        if (_pendingAttachments.any((item) => item.path == path)) {
+          continue;
+        }
+        if (_pendingAttachments.length + additions.length >= maxAttachments) {
+          break;
+        }
+        additions.add(
+          _PendingAttachment(
+            path: path,
+            name: file.name,
+            size: file.size,
+            sizeLabel: _formatFileSize(file.size),
+          ),
+        );
+      }
+      if (additions.isEmpty) {
+        _showSnackBar('Yeni dosya eklenmedi.');
+        return;
+      }
+      setState(() {
+        _pendingAttachments.addAll(additions);
+      });
+    } catch (err) {
+      _showSnackBar('Dosya seçilirken hata oluştu: $err');
+    }
+  }
+
+  void _removeAttachment(_PendingAttachment attachment) {
+    setState(() {
+      _pendingAttachments.removeWhere((item) => item.path == attachment.path);
+    });
+  }
+
+  String _composeMessage(String input, List<_PendingAttachment> attachments) {
+    final trimmed = input.trim();
+    if (attachments.isEmpty) {
+      return trimmed;
+    }
+    final buffer = StringBuffer();
+    if (trimmed.isNotEmpty) {
+      buffer
+        ..writeln(trimmed)
+        ..writeln();
+    }
+    buffer.writeln('**Ekler:**');
+    for (final attachment in attachments) {
+      final uri = Uri.file(attachment.path).toString();
+      buffer.writeln('- [${attachment.name}]($uri) · ${attachment.sizeLabel}');
+    }
+    return buffer.toString().trimRight();
+  }
+
+  void _showSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+      );
+  }
+
+  String _formatFileSize(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    var value = bytes.toDouble();
+    var unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex++;
+    }
+    return '${value.toStringAsFixed(value >= 10 || unitIndex == 0 ? 0 : 1)} ${units[unitIndex]}';
   }
 
   Future<void> _openHeaderMenu() async {
@@ -217,9 +392,8 @@ class _ChatScreenState extends State<ChatScreen> {
             child: Stack(
               children: [
                 if (isStarMode) const _StarfieldOverlay(),
-                AnimatedOpacity(
-                  opacity: _landingAnchoredTop ? 1 : 0,
-                  duration: const Duration(milliseconds: 400),
+                AnimatedBuilder(
+                  animation: _introController,
                   child: Scaffold(
                     backgroundColor: Colors.transparent,
                     body: SafeArea(
@@ -229,50 +403,83 @@ class _ChatScreenState extends State<ChatScreen> {
                             session: session,
                             onMenuPressed: _openHeaderMenu,
                             onModelPressed: _openModelSelector,
-                            onSharePressed: () {
-                              unawaited(
-                                widget.chatController.shareCurrentSession(),
-                              );
-                            },
+                            onSharePressed: _handleShare,
+                            onLocalModelsPressed: isStarMode
+                                ? _openLocalModels
+                                : null,
                             appMode: settings.appMode,
                             onModeChanged: (mode) =>
                                 unawaited(settings.setAppMode(mode)),
+                            collapseModelChip: chat.messages.isNotEmpty,
                           ),
-                          if (!isStarMode) ...[
-                            _StatusBanner(session: session, chat: chat),
-                            Expanded(
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                ),
-                                child: AnimatedBuilder(
-                                  animation: chat,
-                                  builder: (context, _) {
-                                    final messages = chat.messages;
-                                    final showIndicator =
-                                        chat.flowState != ChatFlowState.idle &&
-                                        (messages.isEmpty ||
-                                            messages.last.role ==
-                                                ChatRole.user);
-                                    final totalCount =
-                                        messages.length +
-                                        (showIndicator ? 1 : 0);
-                                    return Listener(
-                                      onPointerDown: (_) => FocusManager
-                                          .instance
-                                          .primaryFocus
-                                          ?.unfocus(),
-                                      child: ListView.builder(
-                                        controller: _scrollController,
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 24,
+                          if (isStarMode)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                              child: _LocalModelBanner(
+                                controller: widget.localModelController,
+                                onManage: _openLocalModels,
+                              ),
+                            ),
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                              ),
+                              child: AnimatedBuilder(
+                                animation: chat,
+                                builder: (context, _) {
+                                  final messages = chat.messages;
+                                  final statuses = <_InlineStatus>[];
+                                  if (session.isLoadingModels) {
+                                    statuses.add(
+                                      const _InlineStatus(
+                                        'Modeller yükleniyor...',
+                                        Icons.sync_rounded,
+                                      ),
+                                    );
+                                  }
+                                  switch (chat.flowState) {
+                                    case ChatFlowState.thinking:
+                                      statuses.add(
+                                        const _InlineStatus(
+                                          'Model düşünüyor...',
+                                          Icons.psychology_alt_outlined,
                                         ),
-                                        itemCount: totalCount,
-                                        itemBuilder: (context, index) {
-                                          if (showIndicator &&
-                                              index == totalCount - 1) {
-                                            return const _TypingBubble();
-                                          }
+                                      );
+                                      break;
+                                    case ChatFlowState.generating:
+                                      statuses.add(
+                                        const _InlineStatus(
+                                          'Yanıt yazılıyor...',
+                                          Icons.hourglass_bottom_rounded,
+                                        ),
+                                      );
+                                      break;
+                                    case ChatFlowState.idle:
+                                      break;
+                                  }
+                                  final showIndicator =
+                                      chat.flowState ==
+                                          ChatFlowState.generating &&
+                                      (messages.isEmpty ||
+                                          messages.last.role == ChatRole.user);
+                                  final totalCount =
+                                      messages.length +
+                                      statuses.length +
+                                      (showIndicator ? 1 : 0);
+                                  return Listener(
+                                    onPointerDown: (_) => FocusManager
+                                        .instance
+                                        .primaryFocus
+                                        ?.unfocus(),
+                                    child: ListView.builder(
+                                      controller: _scrollController,
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 24,
+                                      ),
+                                      itemCount: totalCount,
+                                      itemBuilder: (context, index) {
+                                        if (index < messages.length) {
                                           final message = messages[index];
                                           final isMe =
                                               message.role == ChatRole.user;
@@ -280,205 +487,118 @@ class _ChatScreenState extends State<ChatScreen> {
                                             message: message,
                                             isUser: isMe,
                                           );
-                                        },
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ),
-                            ),
-                            AnimatedBuilder(
-                              animation: chat,
-                              builder: (context, _) {
-                                if (chat.errorMessage == null) {
-                                  return const SizedBox.shrink();
-                                }
-                                return Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 20,
-                                  ),
-                                  child: _ErrorBanner(
-                                    message: chat.errorMessage!,
-                                    onDismiss: chat.dismissError,
-                                  ),
-                                );
-                              },
-                            ),
-                            const SizedBox(height: 12),
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: _ComposerField(
-                                      controller: _inputController,
-                                      hintText: 'Mesaj yaz...',
+                                        }
+                                        final statusIndex =
+                                            index - messages.length;
+                                        if (statusIndex < statuses.length) {
+                                          final status = statuses[statusIndex];
+                                          return _StatusMessage(status: status);
+                                        }
+                                        return _TypingBubble(
+                                          state: chat.flowState,
+                                        );
+                                      },
                                     ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  ValueListenableBuilder<TextEditingValue>(
-                                    valueListenable: _inputController,
-                                    builder: (context, value, _) {
-                                      return AnimatedBuilder(
-                                        animation: chat,
-                                        builder: (context, _) {
-                                          final isSending = chat.isSending;
-                                          final hasText = value.text
-                                              .trim()
-                                              .isNotEmpty;
-                                          final canSend = hasText && !isSending;
-                                          return _CircularSendButton(
-                                            isSending: isSending,
-                                            onPressed: canSend
-                                                ? _handleSend
-                                                : null,
-                                          );
-                                        },
-                                      );
-                                    },
-                                  ),
-                                ],
+                                  );
+                                },
                               ),
                             ),
-                          ] else ...[
-                            const SizedBox(height: 16),
-                            Expanded(
-                              child: Padding(
+                          ),
+                          AnimatedBuilder(
+                            animation: chat,
+                            builder: (context, _) {
+                              if (chat.errorMessage == null) {
+                                return const SizedBox.shrink();
+                              }
+                              return Padding(
                                 padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
+                                  horizontal: 20,
                                 ),
-                                child: _StarModePanel(
-                                  controller: widget.localModelController,
+                                child: _ErrorBanner(
+                                  message: chat.errorMessage!,
+                                  onDismiss: chat.dismissError,
                                 ),
-                              ),
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (_pendingAttachments.isNotEmpty)
+                                  _AttachmentStrip(
+                                    attachments: _pendingAttachments,
+                                    onRemove: _removeAttachment,
+                                  ),
+                                Row(
+                                  children: [
+                                    _AttachButton(
+                                      hasAttachments:
+                                          _pendingAttachments.isNotEmpty,
+                                      onPressed: _pickAttachments,
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: _ComposerField(
+                                        controller: _inputController,
+                                        hintText: 'Mesaj yaz...',
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    ValueListenableBuilder<TextEditingValue>(
+                                      valueListenable: _inputController,
+                                      builder: (context, value, _) {
+                                        return AnimatedBuilder(
+                                          animation: chat,
+                                          builder: (context, _) {
+                                            final isSending = chat.isSending;
+                                            final hasText =
+                                                value.text.trim().isNotEmpty ||
+                                                _pendingAttachments.isNotEmpty;
+                                            final canSend =
+                                                hasText && !isSending;
+                                            return _CircularSendButton(
+                                              isSending: isSending,
+                                              onPressed: canSend
+                                                  ? _handleSend
+                                                  : null,
+                                            );
+                                          },
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 24,
-                                vertical: 12,
-                              ),
-                              child: Text(
-                                'Star modu: Küçük LLM modellerini indirip çevrimdışı\nçalıştırmak için kullanılır. İndirilen modeller yakında\nuygulama içinden çalıştırılabilir.',
-                                style: Theme.of(context).textTheme.bodyMedium,
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                          ],
+                          ),
                         ],
                       ),
                     ),
                   ),
+                  builder: (context, child) {
+                    final blur = _blurAnimation.value;
+                    final opacity = _fadeAnimation.value;
+                    Widget content = child!;
+                    if (blur > 0.05) {
+                      content = ImageFiltered(
+                        imageFilter: ImageFilter.blur(
+                          sigmaX: blur,
+                          sigmaY: blur,
+                        ),
+                        child: content,
+                      );
+                    }
+                    return Opacity(opacity: opacity, child: content);
+                  },
                 ),
-                if (_landingVisible)
-                  _LandingOverlay(anchorToTop: _landingAnchoredTop),
               ],
             ),
           ),
         );
       },
-    );
-  }
-}
-
-class _LandingOverlay extends StatefulWidget {
-  const _LandingOverlay({required this.anchorToTop});
-
-  final bool anchorToTop;
-
-  @override
-  State<_LandingOverlay> createState() => _LandingOverlayState();
-}
-
-class _LandingOverlayState extends State<_LandingOverlay>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulseController;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2200),
-    )..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final fadeOut = widget.anchorToTop;
-    return Positioned.fill(
-      child: IgnorePointer(
-        child: AnimatedAlign(
-          duration: const Duration(milliseconds: 700),
-          curve: Curves.easeOutCubic,
-          alignment: widget.anchorToTop
-              ? Alignment.topCenter
-              : Alignment.center,
-          child: AnimatedPadding(
-            duration: const Duration(milliseconds: 700),
-            curve: Curves.easeOutCubic,
-            padding: EdgeInsets.only(top: widget.anchorToTop ? 40 : 0),
-            child: AnimatedOpacity(
-              duration: const Duration(milliseconds: 450),
-              curve: Curves.easeOutCubic,
-              opacity: fadeOut ? 0 : 1,
-              child: SizedBox(
-                width: 260,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    AnimatedBuilder(
-                      animation: _pulseController,
-                      builder: (context, child) {
-                        final value = 0.9 + (_pulseController.value * 0.2);
-                        return Transform.scale(scale: value, child: child);
-                      },
-                      child: Container(
-                        height: 220,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: RadialGradient(
-                            colors: [
-                              theme.colorScheme.primary.withValues(alpha: 0.35),
-                              Colors.transparent,
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          'orbit',
-                          style: theme.textTheme.displayLarge?.copyWith(
-                            fontSize: 60,
-                            letterSpacing: 2.4,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          'Local-first intelligence',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            letterSpacing: 0.8,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -589,6 +709,8 @@ class _Header extends StatelessWidget {
     required this.onSharePressed,
     required this.appMode,
     required this.onModeChanged,
+    required this.collapseModelChip,
+    this.onLocalModelsPressed,
   });
 
   final SessionController session;
@@ -597,10 +719,11 @@ class _Header extends StatelessWidget {
   final VoidCallback onSharePressed;
   final AppMode appMode;
   final ValueChanged<AppMode> onModeChanged;
+  final bool collapseModelChip;
+  final VoidCallback? onLocalModelsPressed;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
       child: Column(
@@ -615,9 +738,15 @@ class _Header extends StatelessWidget {
                   tooltip: 'Paylaş',
                   onPressed: onSharePressed,
                 ),
+                if (appMode == AppMode.star && onLocalModelsPressed != null)
+                  IconButton(
+                    icon: const Icon(Icons.download_rounded),
+                    tooltip: 'Modelleri yönet',
+                    onPressed: onLocalModelsPressed,
+                  ),
                 Expanded(
                   child: Center(
-                    child: Text('orbit', style: theme.textTheme.displaySmall),
+                    child: _ModeToggle(mode: appMode, onChanged: onModeChanged),
                   ),
                 ),
                 IconButton(
@@ -629,49 +758,167 @@ class _Header extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          SegmentedButton<AppMode>(
-            segments: const [
-              ButtonSegment(value: AppMode.orbit, label: Text('Orbit')),
-              ButtonSegment(value: AppMode.star, label: Text('Star')),
-            ],
-            selected: {appMode},
-            onSelectionChanged: (value) => onModeChanged(value.first),
+          AnimatedBuilder(
+            animation: session,
+            builder: (context, _) {
+              if (appMode != AppMode.orbit) {
+                return const SizedBox.shrink();
+              }
+              final selected = session.selectedModel;
+              final label = selected ?? 'Model seç';
+              final isLoading = session.isLoadingModels;
+              final collapse = collapseModelChip && selected != null;
+              return AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                child: collapse
+                    ? _ModelShortcutButton(
+                        key: const ValueKey('model-shortcut'),
+                        label: label,
+                        isLoading: isLoading,
+                        onTap: onModelPressed,
+                      )
+                    : _ModelChip(
+                        key: const ValueKey('model-chip'),
+                        label: label,
+                        isLoading: isLoading,
+                        onTap: onModelPressed,
+                      ),
+              );
+            },
           ),
-          const SizedBox(height: 16),
-          if (appMode == AppMode.orbit)
-            AnimatedBuilder(
-              animation: session,
-              builder: (context, _) {
-                final selected = session.selectedModel;
-                final isLoading = session.isLoadingModels;
-                return _ModelChip(
-                  label: selected ?? 'Model seç',
-                  isLoading: isLoading,
-                  onTap: onModelPressed,
-                );
-              },
-            )
-          else
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest.withValues(
-                  alpha: 0.45,
-                ),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: theme.colorScheme.outlineVariant.withValues(
-                    alpha: 0.35,
-                  ),
-                ),
-              ),
-              child: Text(
-                'Star modu • Yerel modelleri indir ve çevrimdışı sohbet et.',
-                style: theme.textTheme.bodyMedium,
+        ],
+      ),
+    );
+  }
+}
+
+class _ModeToggle extends StatelessWidget {
+  const _ModeToggle({required this.mode, required this.onChanged});
+
+  final AppMode mode;
+  final ValueChanged<AppMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _ModeToggleItem(
+          label: 'orbit',
+          isActive: mode == AppMode.orbit,
+          onTap: () => onChanged(AppMode.orbit),
+        ),
+        const SizedBox(width: 12),
+        _ModeToggleItem(
+          label: 'star',
+          isActive: mode == AppMode.star,
+          onTap: () => onChanged(AppMode.star),
+        ),
+      ],
+    );
+  }
+}
+
+class _ModeToggleItem extends StatelessWidget {
+  const _ModeToggleItem({
+    required this.label,
+    required this.isActive,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool isActive;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final baseStyle =
+        theme.textTheme.displaySmall ??
+        theme.textTheme.headlineMedium ??
+        const TextStyle(fontSize: 28);
+    final activeColor = baseStyle.color ?? theme.colorScheme.onSurface;
+    final inactiveColor = activeColor.withValues(alpha: 0.35);
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedDefaultTextStyle(
+        duration: const Duration(milliseconds: 220),
+        style: baseStyle.copyWith(
+          color: isActive ? activeColor : inactiveColor,
+          fontSize: isActive
+              ? baseStyle.fontSize
+              : (baseStyle.fontSize ?? 28) - 4,
+          letterSpacing: isActive ? 1.2 : 0.8,
+        ),
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 220),
+          opacity: isActive ? 1 : 0.45,
+          child: Text(label),
+        ),
+      ),
+    );
+  }
+}
+
+class _ModelShortcutButton extends StatelessWidget {
+  const _ModelShortcutButton({
+    super.key,
+    required this.label,
+    required this.isLoading,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool isLoading;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (isLoading) {
+      return SizedBox(
+        height: 48,
+        child: Center(
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(
+                theme.colorScheme.primary,
               ),
             ),
-        ],
+          ),
+        ),
+      );
+    }
+    return SizedBox(
+      height: 48,
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Tooltip(
+          message: 'Model seç: $label',
+          child: Material(
+            color: theme.colorScheme.surfaceContainerHighest.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.35 : 0.7,
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.3),
+              ),
+            ),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: onTap,
+              child: const SizedBox(
+                height: 44,
+                width: 44,
+                child: Icon(Icons.memory_rounded),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -679,6 +926,7 @@ class _Header extends StatelessWidget {
 
 class _ModelChip extends StatelessWidget {
   const _ModelChip({
+    super.key,
     required this.label,
     required this.isLoading,
     required this.onTap,
@@ -735,73 +983,6 @@ class _ModelChip extends StatelessWidget {
   }
 }
 
-class _StatusBanner extends StatelessWidget {
-  const _StatusBanner({required this.session, required this.chat});
-
-  final SessionController session;
-  final ChatController chat;
-
-  @override
-  Widget build(BuildContext context) {
-    String? label;
-    IconData? icon;
-
-    if (session.isLoadingModels) {
-      label = 'Modeller yükleniyor...';
-      icon = Icons.sync_rounded;
-    } else {
-      switch (chat.flowState) {
-        case ChatFlowState.thinking:
-          label = 'Thinking...';
-          icon = Icons.psychology_alt_outlined;
-          break;
-        case ChatFlowState.generating:
-          label = 'Yanıt oluşturuluyor...';
-          icon = Icons.hourglass_bottom_rounded;
-          break;
-        case ChatFlowState.idle:
-          break;
-      }
-    }
-
-    if (label == null) {
-      return const SizedBox(height: 12);
-    }
-
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 250),
-        child: Container(
-          key: ValueKey(label),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest.withValues(
-              alpha: 0.45,
-            ),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                icon,
-                size: 18,
-                color: theme.iconTheme.color?.withValues(alpha: 0.8),
-              ),
-              const SizedBox(width: 12),
-              Expanded(child: Text(label, style: theme.textTheme.bodyMedium)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _MenuCard extends StatelessWidget {
   const _MenuCard({required this.actions});
 
@@ -833,8 +1014,8 @@ class _MenuCard extends StatelessWidget {
                     child: Text(
                       item.label,
                       style: theme.textTheme.titleMedium?.copyWith(
-                        fontSize: 20,
-                        letterSpacing: 0.4,
+                        fontSize: 26,
+                        letterSpacing: 0.6,
                       ),
                     ),
                   ),
@@ -932,10 +1113,78 @@ class _HistorySheet extends StatelessWidget {
   }
 }
 
-class _StarModePanel extends StatelessWidget {
-  const _StarModePanel({required this.controller});
+class _LocalModelBanner extends StatelessWidget {
+  const _LocalModelBanner({required this.controller, required this.onManage});
 
   final LocalModelController controller;
+  final VoidCallback onManage;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final active = controller.activeModelState;
+        final hasInstalled = controller.models.any(
+          (model) => model.status == LocalModelStatus.installed,
+        );
+        final headline = active != null
+            ? 'Aktif model: ${active.descriptor.name}'
+            : (hasInstalled
+                  ? 'Bir modeli etkinleştir'
+                  : 'Yerel model bulunmuyor');
+        final description = active != null
+            ? 'Yerel sohbet bu model üzerinden çalışır.'
+            : (hasInstalled
+                  ? 'İndirilen modellerden birini seçerek hemen kullan.'
+                  : 'Modelleri indirerek star modunda sohbet edebilirsin.');
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.35 : 0.75,
+            ),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
+            ),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(headline, style: theme.textTheme.titleSmall),
+                    const SizedBox(height: 6),
+                    Text(
+                      description,
+                      style: theme.textTheme.bodySmall,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              FilledButton.tonal(
+                onPressed: onManage,
+                child: const Text('Modelleri yönet'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _StarModePanel extends StatelessWidget {
+  const _StarModePanel({required this.controller, required this.onActivate});
+
+  final LocalModelController controller;
+  final Future<void> Function(String id) onActivate;
 
   @override
   Widget build(BuildContext context) {
@@ -952,8 +1201,13 @@ class _StarModePanel extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 16),
           itemBuilder: (context, index) {
             final model = models[index];
+            final isActive =
+                controller.activeModelState?.descriptor.id ==
+                model.descriptor.id;
             return _StarModelTile(
               state: model,
+              isActive: isActive,
+              onActivate: onActivate,
               onDownload: () => controller.startDownload(model.descriptor.id),
               onRemove: () => controller.removeModel(model.descriptor.id),
             );
@@ -967,11 +1221,15 @@ class _StarModePanel extends StatelessWidget {
 class _StarModelTile extends StatelessWidget {
   const _StarModelTile({
     required this.state,
+    required this.isActive,
+    required this.onActivate,
     required this.onDownload,
     required this.onRemove,
   });
 
   final LocalModelState state;
+  final bool isActive;
+  final Future<void> Function(String id) onActivate;
   final VoidCallback onDownload;
   final VoidCallback onRemove;
 
@@ -979,17 +1237,18 @@ class _StarModelTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final descriptor = state.descriptor;
+    Future<void> activate() => onActivate(descriptor.id);
 
-    Widget actionButton;
+    Widget actionWidget;
     switch (state.status) {
       case LocalModelStatus.notInstalled:
-        actionButton = FilledButton(
+        actionWidget = FilledButton(
           onPressed: onDownload,
           child: const Text('İndir'),
         );
         break;
       case LocalModelStatus.downloading:
-        actionButton = FilledButton.tonal(
+        actionWidget = FilledButton.tonal(
           onPressed: null,
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -1009,10 +1268,38 @@ class _StarModelTile extends StatelessWidget {
         );
         break;
       case LocalModelStatus.installed:
-        actionButton = OutlinedButton.icon(
-          onPressed: onRemove,
-          icon: const Icon(Icons.delete_outline_rounded),
-          label: const Text('Kaldır'),
+        actionWidget = Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            isActive
+                ? FilledButton.icon(
+                    onPressed: null,
+                    icon: const Icon(Icons.check_rounded),
+                    label: const Text('Aktif'),
+                  )
+                : FilledButton(
+                    onPressed: () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      await activate();
+                      messenger
+                        ..hideCurrentSnackBar()
+                        ..showSnackBar(
+                          SnackBar(
+                            content: Text('${descriptor.name} aktif edildi.'),
+                            behavior: SnackBarBehavior.floating,
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                    },
+                    child: const Text('Kullan'),
+                  ),
+            OutlinedButton.icon(
+              onPressed: onRemove,
+              icon: const Icon(Icons.delete_outline_rounded),
+              label: const Text('Kaldır'),
+            ),
+          ],
         );
         break;
     }
@@ -1036,7 +1323,36 @@ class _StarModelTile extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(descriptor.name, style: theme.textTheme.titleMedium),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            descriptor.name,
+                            style: theme.textTheme.titleMedium,
+                          ),
+                        ),
+                        if (isActive)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.primary.withValues(
+                                alpha: 0.12,
+                              ),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              'Aktif',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.primary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                     const SizedBox(height: 4),
                     Text(
                       '${descriptor.sizeLabel} • ${descriptor.license}',
@@ -1045,7 +1361,7 @@ class _StarModelTile extends StatelessWidget {
                   ],
                 ),
               ),
-              actionButton,
+              actionWidget,
             ],
           ),
           const SizedBox(height: 12),
@@ -1114,7 +1430,31 @@ class _HistoryTile extends StatelessWidget {
                     tooltip: 'Paylaş',
                     icon: const Icon(Icons.ios_share_rounded),
                     onPressed: () async {
-                      await chat.shareSession(session);
+                      final status = await chat.shareSession(session);
+                      if (!context.mounted) return;
+                      final messenger = ScaffoldMessenger.of(context);
+                      String feedback;
+                      switch (status) {
+                        case ShareResultStatus.success:
+                          feedback = 'Paylaşım penceresi açıldı.';
+                          break;
+                        case ShareResultStatus.dismissed:
+                          feedback = 'Paylaşım kapatıldı.';
+                          break;
+                        case ShareResultStatus.unavailable:
+                          feedback =
+                              'Paylaşım desteklenmiyor, sohbet panoya kopyalandı.';
+                          break;
+                      }
+                      messenger
+                        ..hideCurrentSnackBar()
+                        ..showSnackBar(
+                          SnackBar(
+                            content: Text(feedback),
+                            behavior: SnackBarBehavior.floating,
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
                     },
                   ),
                   IconButton(
@@ -1257,11 +1597,14 @@ class _BubbleFooter extends StatelessWidget {
         : null;
     final children = <Widget>[
       IconButton(
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minHeight: 28, minWidth: 28),
-        iconSize: 18,
         tooltip: 'Kopyala',
-        icon: const Icon(Icons.copy_rounded),
+        style: IconButton.styleFrom(
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          padding: EdgeInsets.zero,
+          minimumSize: const Size(28, 28),
+          visualDensity: VisualDensity.compact,
+        ),
+        icon: const Icon(Icons.copy_rounded, size: 16),
         onPressed: () {
           Clipboard.setData(ClipboardData(text: message.content));
           ScaffoldMessenger.of(context)
@@ -1293,6 +1636,122 @@ class _BubbleFooter extends StatelessWidget {
       child: Row(mainAxisSize: MainAxisSize.min, children: children),
     );
   }
+}
+
+class _InlineStatus {
+  const _InlineStatus(this.label, this.icon);
+
+  final String label;
+  final IconData icon;
+}
+
+class _StatusMessage extends StatelessWidget {
+  const _StatusMessage({required this.status});
+
+  final _InlineStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final background = theme.colorScheme.surfaceContainerHighest.withValues(
+      alpha: theme.brightness == Brightness.dark ? 0.35 : 0.72,
+    );
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: background,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.25),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              status.icon,
+              size: 16,
+              color: theme.colorScheme.primary.withValues(alpha: 0.85),
+            ),
+            const SizedBox(width: 8),
+            Text(status.label, style: theme.textTheme.bodySmall),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AttachButton extends StatelessWidget {
+  const _AttachButton({required this.hasAttachments, required this.onPressed});
+
+  final bool hasAttachments;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final highlight = hasAttachments
+        ? theme.colorScheme.primary
+        : theme.iconTheme.color?.withValues(alpha: 0.9);
+    return IconButton(
+      tooltip: 'Dosya ekle',
+      onPressed: onPressed,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      iconSize: 22,
+      constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
+      icon: Icon(Icons.attach_file_rounded, color: highlight),
+    );
+  }
+}
+
+class _AttachmentStrip extends StatelessWidget {
+  const _AttachmentStrip({required this.attachments, required this.onRemove});
+
+  final List<_PendingAttachment> attachments;
+  final ValueChanged<_PendingAttachment> onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: attachments
+            .map(
+              (attachment) => InputChip(
+                label: Text('${attachment.name} • ${attachment.sizeLabel}'),
+                onDeleted: () => onRemove(attachment),
+                avatar: Icon(
+                  Icons.insert_drive_file_rounded,
+                  size: 16,
+                  color: theme.colorScheme.primary.withValues(alpha: 0.7),
+                ),
+              ),
+            )
+            .toList(),
+      ),
+    );
+  }
+}
+
+class _PendingAttachment {
+  _PendingAttachment({
+    required this.path,
+    required this.name,
+    required this.size,
+    required this.sizeLabel,
+  });
+
+  final String path;
+  final String name;
+  final int size;
+  final String sizeLabel;
 }
 
 class _ComposerField extends StatelessWidget {
@@ -1416,7 +1875,9 @@ class _ErrorBanner extends StatelessWidget {
 }
 
 class _TypingBubble extends StatelessWidget {
-  const _TypingBubble();
+  const _TypingBubble({required this.state});
+
+  final ChatFlowState state;
 
   @override
   Widget build(BuildContext context) {
@@ -1424,6 +1885,11 @@ class _TypingBubble extends StatelessWidget {
     final background = theme.colorScheme.surfaceContainerHighest.withValues(
       alpha: theme.brightness == Brightness.dark ? 0.4 : 0.8,
     );
+    final label = switch (state) {
+      ChatFlowState.thinking => 'Model düşünüyor...',
+      ChatFlowState.generating => 'Yanıt yazılıyor...',
+      ChatFlowState.idle => 'Hazırlanıyor...',
+    };
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
@@ -1452,7 +1918,7 @@ class _TypingBubble extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 12),
-            Text('Orbit düşünüyor...', style: theme.textTheme.bodySmall),
+            Text(label, style: theme.textTheme.bodySmall),
           ],
         ),
       ),

@@ -111,6 +111,29 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                                       ).textTheme.displaySmall,
                                     ),
                                     const SizedBox(height: 32),
+
+                                    _GlassCard(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            'LM Studio hazırlığı',
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.titleSmall,
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            "LM Studio'da Developer Mode'u açıp Settings altından \"Serve on local network\" seçeneğini işaretleyin. Ardından \"Reachable at\" satırındaki adresi yukarıya girin.",
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 20),
                                     _GlassCard(
                                       child: Column(
                                         crossAxisAlignment:

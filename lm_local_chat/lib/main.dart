@@ -104,13 +104,13 @@ class _OrbitAppState extends State<OrbitApp> {
     final base = ThemeData(brightness: brightness, useMaterial3: true);
     final accent = _settingsController.accentColor;
     final isDark = brightness == Brightness.dark;
-    final surface = isDark ? const Color(0xFF080808) : const Color(0xFFF9F9FE);
+    final surface = isDark ? const Color(0xFF080808) : const Color(0xFFF4F1EC);
     final surfaceContainer = isDark
         ? const Color(0xFF141418)
-        : const Color(0xFFEDEDF6);
+        : const Color(0xFFE6E1D9);
     final outlineVariant = isDark
         ? const Color(0xFF3F3F3F)
-        : const Color(0xFFCBCBE4);
+        : const Color(0xFFBEB6A8);
 
     final colorScheme =
         ColorScheme.fromSeed(

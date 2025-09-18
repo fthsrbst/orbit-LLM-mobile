@@ -51,6 +51,7 @@ class LocalModelController extends ChangeNotifier {
   LocalModelController();
 
   static const _storageKey = 'orbit_local_models';
+  static const _activeModelKey = 'orbit_local_active_model';
 
   final List<LocalModelDescriptor> _availableDescriptors = const [
     LocalModelDescriptor(
@@ -86,8 +87,20 @@ class LocalModelController extends ChangeNotifier {
   final List<LocalModelState> _models = [];
   bool _initialised = false;
   Timer? _downloadTimer;
+  String? _activeModelId;
 
   List<LocalModelState> get models => List.unmodifiable(_models);
+  String? get activeModelId => _activeModelId;
+  LocalModelState? get activeModelState {
+    if (_activeModelId == null) return null;
+    for (final model in _models) {
+      if (model.descriptor.id == _activeModelId &&
+          model.status == LocalModelStatus.installed) {
+        return model;
+      }
+    }
+    return null;
+  }
 
   Future<void> initialise() async {
     if (_initialised) return;
@@ -112,6 +125,21 @@ class LocalModelController extends ChangeNotifier {
       } catch (_) {
         // ignore corrupt payloads
       }
+    }
+    final activeId = prefs.getString(_activeModelKey);
+    if (activeId != null) {
+      for (final model in _models) {
+        if (model.descriptor.id == activeId &&
+            model.status == LocalModelStatus.installed) {
+          _activeModelId = activeId;
+          break;
+        }
+      }
+      if (_activeModelId != activeId) {
+        _activeModelId = null;
+      }
+    } else {
+      _activeModelId = null;
     }
     _initialised = true;
     notifyListeners();
@@ -143,6 +171,10 @@ class LocalModelController extends ChangeNotifier {
     model.status = LocalModelStatus.installed;
     model.progress = 1.0;
     await _persist();
+    if (_activeModelId == null) {
+      _activeModelId = id;
+      await _persistActive();
+    }
     notifyListeners();
   }
 
@@ -151,6 +183,23 @@ class LocalModelController extends ChangeNotifier {
     model.status = LocalModelStatus.notInstalled;
     model.progress = 0;
     await _persist();
+    if (_activeModelId == id) {
+      _activeModelId = null;
+      await _persistActive();
+    }
+    notifyListeners();
+  }
+
+  Future<void> setActiveModel(String id) async {
+    final model = _models.firstWhere((m) => m.descriptor.id == id);
+    if (model.status != LocalModelStatus.installed) {
+      return;
+    }
+    if (_activeModelId == id) {
+      return;
+    }
+    _activeModelId = id;
+    await _persistActive();
     notifyListeners();
   }
 
@@ -160,6 +209,16 @@ class LocalModelController extends ChangeNotifier {
       for (final model in _models) model.descriptor.id: model.toJson(),
     };
     await prefs.setString(_storageKey, jsonEncode(payload));
+  }
+
+  Future<void> _persistActive() async {
+    final prefs = await SharedPreferences.getInstance();
+    final id = _activeModelId;
+    if (id == null) {
+      await prefs.remove(_activeModelKey);
+    } else {
+      await prefs.setString(_activeModelKey, id);
+    }
   }
 
   @override
