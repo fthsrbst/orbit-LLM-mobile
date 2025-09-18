@@ -1,21 +1,16 @@
 import 'dart:async';
+import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:llama_cpp_dart/llama_cpp_dart.dart';
 
 import '../models/chat_message.dart';
 
 class LocalInferenceService {
-  LocalInferenceService() {
-    if (Platform.isWindows) {
-      Llama.libraryPath = 'llama.dll';
-    } else if (Platform.isMacOS || Platform.isIOS) {
-      Llama.libraryPath = 'libllama.dylib';
-    } else {
-      Llama.libraryPath = 'libllama.so';
-    }
-  }
+  LocalInferenceService();
 
   LlamaParent? _parent;
   String? _modelPath;
@@ -23,6 +18,14 @@ class LocalInferenceService {
   double _temperature = 0.7;
   Future<void>? _loadingFuture;
   bool _isDisposed = false;
+  bool _libraryPathReady = false;
+  Future<void>? _libraryFuture;
+
+  void _debug(String message) {
+    if (kDebugMode) {
+      debugPrint('[LocalInference] $message');
+    }
+  }
 
   Future<void> ensureModelLoaded({
     required String modelId,
@@ -32,6 +35,8 @@ class LocalInferenceService {
     if (_isDisposed) {
       throw StateError('Yerel çıkarım servisi kapatıldı.');
     }
+
+    await _ensureLibraryPath();
 
     if (_parent != null &&
         _modelPath == modelPath &&
@@ -71,6 +76,7 @@ class LocalInferenceService {
     if (parent == null || parent.status == LlamaStatus.disposed) {
       throw StateError('Yerel model yüklenmedi.');
     }
+    _debug('Yerel yanıt isteği alındı (geçmiş: ${history.length}).');
     final controller = StreamController<String>();
 
     StreamSubscription<String>? tokenSub;
@@ -127,6 +133,7 @@ class LocalInferenceService {
 
         activePromptId = await parent.sendPrompt(prompt);
         await done.future;
+        _debug('Yerel yanıt tamamlandı.');
         if (!controller.isClosed) {
           await controller.close();
         }
@@ -161,6 +168,124 @@ class LocalInferenceService {
     }
   }
 
+  Future<void> _ensureLibraryPath() async {
+    if (_libraryPathReady) {
+      return;
+    }
+    final pending = _libraryFuture;
+    if (pending != null) {
+      await pending;
+      return;
+    }
+    final completer = Completer<void>();
+    _libraryFuture = completer.future;
+    try {
+      final override = _readEnv('ORBIT_LLAMA_LIBRARY');
+      if (override != null && override.isNotEmpty) {
+        final file = File(override);
+        if (!await file.exists()) {
+          throw StateError(
+            'ORBIT_LLAMA_LIBRARY ile belirtilen libllama dosyası bulunamadı: $override',
+          );
+        }
+        Llama.libraryPath = override;
+        _debug('libllama yolu ortam değişkeninden yüklendi: $override');
+      } else {
+        final resolved = await Isolate.resolvePackageUri(
+          Uri.parse('package:llama_cpp_dart/llama_cpp_dart.dart'),
+        );
+        final bundled = await _findBundledLibrary(resolved);
+        if (bundled == null) {
+          final fallback = _defaultLibraryName();
+          throw StateError(
+            'libllama kütüphanesi bulunamadı. $fallback dosyasının sistem PATH üzerinde olduğundan '
+            'veya ORBIT_LLAMA_LIBRARY ortam değişkeni ile tam yolun belirtildiğinden emin olun.',
+          );
+        }
+        Llama.libraryPath = bundled;
+        _debug('libllama bundle içerisinden ayarlandı: $bundled');
+      }
+      _libraryPathReady = true;
+      completer.complete();
+    } catch (error, stackTrace) {
+      completer.completeError(error, stackTrace);
+      rethrow;
+    } finally {
+      _libraryFuture = null;
+    }
+  }
+
+  String? _readEnv(String key) {
+    try {
+      return Platform.environment[key];
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _defaultLibraryName() {
+    if (Platform.isWindows) {
+      return 'llama.dll';
+    }
+    if (Platform.isMacOS || Platform.isIOS) {
+      return 'libllama.dylib';
+    }
+    return 'libllama.so';
+  }
+
+  Future<String?> _findBundledLibrary(Uri? packageLibrary) async {
+    if (packageLibrary == null || packageLibrary.scheme != 'file') {
+      return null;
+    }
+    final packageFile = File.fromUri(packageLibrary);
+    final packageDir = packageFile.parent.parent;
+    final binDir = Directory('${packageDir.path}/bin');
+    if (!await binDir.exists()) {
+      return null;
+    }
+
+    final candidates = _candidatePathsForAbi(binDir.path);
+    for (final candidate in candidates) {
+      final file = File(candidate);
+      if (await file.exists()) {
+        return file.path;
+      }
+    }
+
+    await for (final entity in binDir.list(
+      recursive: true,
+      followLinks: false,
+    )) {
+      if (entity is! File) continue;
+      final name = entity.uri.pathSegments.last.toLowerCase();
+      if (name.startsWith('libllama') || name == 'llama.dll') {
+        return entity.path;
+      }
+    }
+    return null;
+  }
+
+  List<String> _candidatePathsForAbi(String binPath) {
+    switch (Abi.current()) {
+      case Abi.macosArm64:
+        return [
+          '$binPath/MAC_ARM64/libllama.dylib',
+          '$binPath/SIMULATORARM64/libllama.dylib',
+          '$binPath/SIMULATOR64/libllama.dylib',
+        ];
+      case Abi.iosArm64:
+        return [
+          '$binPath/OS64/libllama.dylib',
+          '$binPath/SIMULATORARM64/libllama.dylib',
+        ];
+      case Abi.androidArm64:
+      case Abi.androidArm:
+        return const [];
+      default:
+        return const [];
+    }
+  }
+
   Future<void> _initialiseParent({
     required String modelId,
     required String modelPath,
@@ -172,6 +297,8 @@ class LocalInferenceService {
     }
 
     await _parent?.dispose();
+
+    _debug('Yerel model yükleniyor: $modelId (${file.path})');
 
     final cpuCount = max(2, Platform.numberOfProcessors);
     final contextParams = ContextParams()
@@ -199,7 +326,19 @@ class LocalInferenceService {
     );
 
     final parent = LlamaParent(loadCommand, ChatMLFormat());
-    await parent.init();
+    try {
+      await parent.init();
+    } catch (error, stackTrace) {
+      _debug('Model başlatılamadı: $error');
+      Error.throwWithStackTrace(
+        StateError(
+          'Yerel model başlatılamadı: $error. '
+          'libllama kütüphanesinin doğru yüklendiğinden emin olun.',
+        ),
+        stackTrace,
+      );
+    }
+    _debug('Model $modelId hazır.');
     _parent = parent;
     _modelId = modelId;
     _modelPath = modelPath;

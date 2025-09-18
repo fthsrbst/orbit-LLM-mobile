@@ -315,6 +315,7 @@ class _ChatScreenState extends State<ChatScreen>
       ),
       builder: (context) => Padding(
         padding: EdgeInsets.only(
+          top: 16,
           bottom: MediaQuery.of(context).viewInsets.bottom + 24,
         ),
         child: SettingsSheet(
@@ -406,7 +407,7 @@ class _ChatScreenState extends State<ChatScreen>
       animation: settings,
       builder: (context, _) {
         return AnimatedWaveBackground(
-          enableShader: settings.useShader && !isStarMode,
+          enableShader: settings.useShader,
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
             onTap: () => FocusScope.of(context).unfocus(),
@@ -664,22 +665,39 @@ class _StarfieldPainter extends CustomPainter {
     const Offset(0.72, 0.9),
   ];
 
+  static final List<Offset> _sparkles = <Offset>[
+    const Offset(0.06, 0.12),
+    const Offset(0.18, 0.05),
+    const Offset(0.32, 0.14),
+    const Offset(0.44, 0.08),
+    const Offset(0.58, 0.12),
+    const Offset(0.7, 0.08),
+    const Offset(0.82, 0.16),
+    const Offset(0.9, 0.22),
+    const Offset(0.08, 0.46),
+    const Offset(0.2, 0.58),
+    const Offset(0.4, 0.62),
+    const Offset(0.68, 0.44),
+    const Offset(0.84, 0.48),
+    const Offset(0.12, 0.86),
+    const Offset(0.28, 0.92),
+    const Offset(0.46, 0.9),
+    const Offset(0.62, 0.84),
+    const Offset(0.8, 0.88),
+  ];
+
   @override
   void paint(Canvas canvas, Size size) {
-    final background = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [
-          const Color(0xFF05060C),
-          const Color(0xFF0C1022),
-          const Color(0xFF111836),
-        ],
-      ).createShader(Offset.zero & size);
-    canvas.drawRect(Offset.zero & size, background);
+    final glowCenter = Offset(size.width * 0.52, size.height * 0.78);
+    final glowRadius = size.width * 0.6;
+    final glowShader = RadialGradient(
+      colors: [accentColor.withValues(alpha: 0.18), Colors.transparent],
+      stops: const [0.0, 1.0],
+    ).createShader(Rect.fromCircle(center: glowCenter, radius: glowRadius));
+    canvas.drawCircle(glowCenter, glowRadius, Paint()..shader = glowShader);
 
     final starPaint = Paint()..color = Colors.white.withValues(alpha: 0.85);
-    final accentPaint = Paint()..color = accentColor.withValues(alpha: 0.6);
+    final accentPaint = Paint()..color = accentColor.withValues(alpha: 0.55);
 
     for (var i = 0; i < _stars.length; i++) {
       final offset = Offset(
@@ -688,6 +706,22 @@ class _StarfieldPainter extends CustomPainter {
       );
       final radius = 1.5 + (i % 3) * 0.8;
       canvas.drawCircle(offset, radius, i.isEven ? accentPaint : starPaint);
+    }
+
+    final sparklePaint = Paint()..color = Colors.white.withValues(alpha: 0.35);
+    final accentSparklePaint = Paint()
+      ..color = accentColor.withValues(alpha: 0.25);
+    for (var i = 0; i < _sparkles.length; i++) {
+      final offset = Offset(
+        _sparkles[i].dx * size.width,
+        _sparkles[i].dy * size.height,
+      );
+      final radius = 0.6 + (i % 2) * 0.35;
+      canvas.drawCircle(
+        offset,
+        radius,
+        i.isEven ? sparklePaint : accentSparklePaint,
+      );
     }
 
     final arcPaint = Paint()
@@ -759,28 +793,39 @@ class _Header extends StatelessWidget {
         children: [
           SizedBox(
             height: 48,
-            child: Row(
+            child: Stack(
               children: [
-                IconButton(
-                  icon: const Icon(Icons.ios_share_rounded),
-                  tooltip: 'Paylaş',
-                  onPressed: onSharePressed,
-                ),
-                if (appMode == AppMode.star && onLocalModelsPressed != null)
-                  IconButton(
-                    icon: const Icon(Icons.download_rounded),
-                    tooltip: 'Modelleri yönet',
-                    onPressed: onLocalModelsPressed,
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.ios_share_rounded),
+                        tooltip: 'Paylaş',
+                        onPressed: onSharePressed,
+                      ),
+                      if (appMode == AppMode.star &&
+                          onLocalModelsPressed != null)
+                        IconButton(
+                          icon: const Icon(Icons.download_rounded),
+                          tooltip: 'Modelleri yönet',
+                          onPressed: onLocalModelsPressed,
+                        ),
+                    ],
                   ),
-                Expanded(
-                  child: Center(
-                    child: _ModeToggle(mode: appMode, onChanged: onModeChanged),
-                  ),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.grid_view_rounded),
-                  tooltip: 'Menü',
-                  onPressed: onMenuPressed,
+                Align(
+                  alignment: Alignment.center,
+                  child: _ModeToggle(mode: appMode, onChanged: onModeChanged),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: IconButton(
+                    icon: const Icon(Icons.grid_view_rounded),
+                    tooltip: 'Menü',
+                    onPressed: onMenuPressed,
+                  ),
                 ),
               ],
             ),
@@ -1320,6 +1365,8 @@ class _StarModePanel extends StatelessWidget {
                           onActivate: onActivate,
                           onDownload: () =>
                               controller.startDownload(model.descriptor.id),
+                          onCancel: () =>
+                              controller.cancelDownload(model.descriptor.id),
                           onRemove: () =>
                               controller.removeModel(model.descriptor.id),
                         );
@@ -1342,6 +1389,7 @@ class _StarModelTile extends StatelessWidget {
     required this.isActive,
     required this.onActivate,
     required this.onDownload,
+    required this.onCancel,
     required this.onRemove,
   });
 
@@ -1349,6 +1397,7 @@ class _StarModelTile extends StatelessWidget {
   final bool isActive;
   final Future<void> Function(String id) onActivate;
   final Future<void> Function() onDownload;
+  final Future<void> Function() onCancel;
   final Future<void> Function() onRemove;
 
   @override
@@ -1380,8 +1429,32 @@ class _StarModelTile extends StatelessWidget {
         );
         break;
       case LocalModelStatus.downloading:
+        final percent = (state.progress * 100).clamp(0, 100).round();
+        final indicatorValue = state.progress.clamp(0.0, 1.0);
         actionWidget = FilledButton.tonal(
-          onPressed: null,
+          onPressed: () async {
+            final messenger = ScaffoldMessenger.of(context);
+            try {
+              await onCancel();
+              messenger
+                ..hideCurrentSnackBar()
+                ..showSnackBar(
+                  const SnackBar(
+                    content: Text('İndirme iptal edildi.'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+            } catch (error) {
+              messenger
+                ..hideCurrentSnackBar()
+                ..showSnackBar(
+                  SnackBar(
+                    content: Text('İptal edilemedi: $error'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+            }
+          },
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1390,11 +1463,11 @@ class _StarModelTile extends StatelessWidget {
                 height: 16,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  value: state.progress,
+                  value: indicatorValue,
                 ),
               ),
               const SizedBox(width: 12),
-              Text('${(state.progress * 100).round()}%'),
+              Text('$percent% • İptal'),
             ],
           ),
         );
@@ -2182,7 +2255,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
       animation: controller,
       builder: (context, _) {
         return SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [

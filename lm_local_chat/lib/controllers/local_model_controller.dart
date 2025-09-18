@@ -57,6 +57,17 @@ class LocalModelState {
   }
 }
 
+class _ActiveDownload {
+  _ActiveDownload({required this.model, required this.file});
+
+  final LocalModelState model;
+  final File file;
+  IOSink? sink;
+  StreamSubscription<List<int>>? subscription;
+  final Completer<void> completer = Completer<void>();
+  bool isCancelled = false;
+}
+
 class LocalModelController extends ChangeNotifier {
   LocalModelController();
 
@@ -109,6 +120,7 @@ class LocalModelController extends ChangeNotifier {
   Directory? _modelsDirectory;
   final http.Client _client = http.Client();
   final Map<String, Future<void>> _activeDownloads = {};
+  final Map<String, _ActiveDownload> _inFlightDownloads = {};
 
   List<LocalModelState> get models => List.unmodifiable(_models);
   String? get activeModelId => _activeModelId;
@@ -244,9 +256,50 @@ class LocalModelController extends ChangeNotifier {
     }
   }
 
+  Future<void> cancelDownload(String id) async {
+    final handle = _inFlightDownloads[id];
+    if (handle == null) {
+      return;
+    }
+    if (handle.isCancelled) {
+      if (!handle.completer.isCompleted) {
+        await handle.completer.future;
+      }
+      return;
+    }
+    handle.isCancelled = true;
+    final subscription = handle.subscription;
+    if (subscription != null) {
+      await subscription.cancel();
+    }
+    final sink = handle.sink;
+    if (sink != null) {
+      handle.sink = null;
+      try {
+        await sink.close();
+      } catch (_) {
+        // ignore sink close errors on cancellation
+      }
+    }
+    if (await handle.file.exists()) {
+      await handle.file.delete();
+    }
+    final model = handle.model;
+    model.status = LocalModelStatus.notInstalled;
+    model.progress = 0;
+    model.localPath = null;
+    await _persist();
+    notifyListeners();
+    if (!handle.completer.isCompleted) {
+      handle.completer.complete();
+    }
+    _inFlightDownloads.remove(id);
+  }
+
   Future<void> removeModel(String id) async {
     final model = _models.firstWhere((m) => m.descriptor.id == id);
     if (model.status == LocalModelStatus.downloading) {
+      await cancelDownload(id);
       return;
     }
     final path = model.localPath;
@@ -340,23 +393,45 @@ class LocalModelController extends ChangeNotifier {
 
     final totalBytes = response.contentLength ?? 0;
     var receivedBytes = 0;
-    IOSink? sink;
+    final sink = file.openWrite();
+    final handle = _ActiveDownload(model: model, file: file)..sink = sink;
+    _inFlightDownloads[descriptor.id] = handle;
+    final completer = handle.completer;
 
-    try {
-      sink = file.openWrite();
-      await for (final chunk in response.stream) {
-        sink.add(chunk);
-        receivedBytes += chunk.length;
-        if (totalBytes > 0) {
-          model.progress = (receivedBytes / totalBytes).clamp(0.0, 0.995);
-        } else {
-          model.progress = (model.progress + 0.01).clamp(0.0, 0.95);
-        }
-        notifyListeners();
+    Future<void> completeFailure(Object error, StackTrace stackTrace) async {
+      try {
+        await sink.close();
+      } catch (_) {
+        // ignore sink errors during failure cleanup
       }
-      await sink.flush();
-      await sink.close();
-      sink = null;
+      handle.sink = null;
+      if (await file.exists()) {
+        await file.delete();
+      }
+      model.status = LocalModelStatus.notInstalled;
+      model.progress = 0;
+      model.localPath = null;
+      notifyListeners();
+      if (!completer.isCompleted) {
+        completer.completeError(error, stackTrace);
+      }
+    }
+
+    Future<void> completeSuccess() async {
+      if (handle.isCancelled) {
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+        return;
+      }
+      try {
+        await sink.flush();
+        await sink.close();
+      } catch (error, stackTrace) {
+        await completeFailure(error, stackTrace);
+        return;
+      }
+      handle.sink = null;
 
       model.status = LocalModelStatus.installed;
       model.progress = 1.0;
@@ -367,16 +442,58 @@ class LocalModelController extends ChangeNotifier {
         await _persistActive();
       }
       notifyListeners();
-    } catch (error) {
-      await sink?.close();
-      if (await file.exists()) {
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    }
+
+    final subscription = response.stream.listen(
+      (chunk) {
+        if (handle.isCancelled) {
+          return;
+        }
+        sink.add(chunk);
+        receivedBytes += chunk.length;
+        if (totalBytes > 0) {
+          model.progress = (receivedBytes / totalBytes).clamp(0.0, 0.995);
+        } else {
+          model.progress = (model.progress + 0.01).clamp(0.0, 0.95);
+        }
+        notifyListeners();
+      },
+      onError: (error, stackTrace) {
+        if (handle.isCancelled) {
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+          return;
+        }
+        unawaited(completeFailure(error, stackTrace));
+      },
+      onDone: () {
+        unawaited(completeSuccess());
+      },
+      cancelOnError: true,
+    );
+    handle.subscription = subscription;
+
+    try {
+      await completer.future;
+    } finally {
+      _inFlightDownloads.remove(descriptor.id);
+      await subscription.cancel();
+      if (handle.isCancelled && await file.exists()) {
         await file.delete();
       }
-      model.status = LocalModelStatus.notInstalled;
-      model.progress = 0;
-      model.localPath = null;
-      notifyListeners();
-      rethrow;
+      final remainingSink = handle.sink;
+      if (remainingSink != null) {
+        try {
+          await remainingSink.close();
+        } catch (_) {
+          // ignore sink close errors on teardown
+        }
+        handle.sink = null;
+      }
     }
   }
 }
