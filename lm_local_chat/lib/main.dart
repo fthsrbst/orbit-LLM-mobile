@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'controllers/chat_controller.dart';
+import 'controllers/local_model_controller.dart';
 import 'controllers/session_controller.dart';
 import 'controllers/settings_controller.dart';
 import 'services/chat_storage_service.dart';
@@ -30,6 +31,7 @@ class _OrbitAppState extends State<OrbitApp> {
   late final SessionController _sessionController;
   late final ChatStorageService _chatStorage;
   late final ChatController _chatController;
+  late final LocalModelController _localModelController;
   late final SettingsController _settingsController;
   bool _bootstrapped = false;
   String? _lastHost;
@@ -48,6 +50,7 @@ class _OrbitAppState extends State<OrbitApp> {
       _sessionController,
       _chatStorage,
     );
+    _localModelController = LocalModelController();
     _settingsController = SettingsController();
     _sessionController.addListener(_handleSessionChanged);
     _bootstrap();
@@ -57,6 +60,7 @@ class _OrbitAppState extends State<OrbitApp> {
     await _settingsController.initialise();
     await _sessionController.initialise();
     await _chatController.initialise();
+    await _localModelController.initialise();
     _lastHost = _sessionController.host;
     final prefs = await SharedPreferences.getInstance();
     final hasSeenOnboarding = prefs.getBool(_onboardingKey) ?? false;
@@ -91,6 +95,7 @@ class _OrbitAppState extends State<OrbitApp> {
     _service.dispose();
     _sessionController.dispose();
     _chatController.dispose();
+    _localModelController.dispose();
     _settingsController.dispose();
     super.dispose();
   }
@@ -207,6 +212,7 @@ class _OrbitAppState extends State<OrbitApp> {
                                   sessionController: _sessionController,
                                   chatController: _chatController,
                                   settingsController: _settingsController,
+                                  localModelController: _localModelController,
                                 )
                               : ConnectionScreen(
                                   key: const ValueKey('connection'),
