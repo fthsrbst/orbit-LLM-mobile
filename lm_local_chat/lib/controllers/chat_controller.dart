@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
@@ -10,16 +8,23 @@ import '../models/chat_message.dart';
 import '../models/chat_session.dart';
 import '../services/chat_storage_service.dart';
 import '../services/lm_studio_service.dart';
+import '../services/local_inference_service.dart';
 import 'session_controller.dart';
 
 enum ChatFlowState { idle, thinking, generating }
 
 class ChatController extends ChangeNotifier {
-  ChatController(this._service, this._sessionController, this._storage);
+  ChatController(
+    this._service,
+    this._sessionController,
+    this._storage,
+    this._localInference,
+  );
 
   final LmStudioService _service;
   final SessionController _sessionController;
   final ChatStorageService _storage;
+  final LocalInferenceService _localInference;
 
   final List<ChatMessage> _messages = <ChatMessage>[];
   bool _isSending = false;
@@ -71,6 +76,8 @@ class ChatController extends ChangeNotifier {
     String content, {
     bool forceOffline = false,
     String? offlineModelName,
+    String? offlineModelPath,
+    String? offlineModelId,
   }) async {
     final trimmed = content.trim();
     if (trimmed.isEmpty) {
@@ -78,7 +85,19 @@ class ChatController extends ChangeNotifier {
     }
 
     if (forceOffline) {
-      await _sendOffline(trimmed, offlineModelName ?? 'Yerel model');
+      if (offlineModelPath == null || offlineModelId == null) {
+        _error =
+            'Yerel model bulunamadı. Modelleri yönet bölümünden bir model indirip etkinleştir.';
+        notifyListeners();
+        return;
+      }
+      await _sendOffline(
+        userContent: trimmed,
+        modelName: offlineModelName ?? 'Yerel model',
+        modelId: offlineModelId,
+        modelPath: offlineModelPath,
+        temperature: _sessionController.temperature,
+      );
       return;
     }
 
@@ -191,90 +210,67 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> _sendOffline(String content, String modelName) async {
-    final userMessage = ChatMessage(role: ChatRole.user, content: content);
+  Future<void> _sendOffline({
+    required String userContent,
+    required String modelName,
+    required String modelId,
+    required String modelPath,
+    required double temperature,
+  }) async {
+    final userMessage = ChatMessage(role: ChatRole.user, content: userContent);
     _messages.add(userMessage);
     _isSending = true;
     _error = null;
     _flowState = ChatFlowState.thinking;
     notifyListeners();
 
+    final conversation = List<ChatMessage>.from(_messages);
+
     try {
-      await Future<void>.delayed(const Duration(milliseconds: 180));
-      _flowState = ChatFlowState.generating;
-      notifyListeners();
+      await _localInference.ensureModelLoaded(
+        modelId: modelId,
+        modelPath: modelPath,
+        temperature: temperature,
+      );
 
       final placeholder = ChatMessage(role: ChatRole.assistant, content: '');
       _messages.add(placeholder);
       final assistantIndex = _messages.length - 1;
+      _flowState = ChatFlowState.generating;
+      notifyListeners();
 
-      final generated = _synthesiseOfflineResponse(content, modelName);
-      final words = generated.split(RegExp(r'\s+'));
       final buffer = StringBuffer();
-      for (final word in words) {
-        if (word.isEmpty) continue;
-        buffer
-          ..write(word)
-          ..write(' ');
+      await for (final chunk in _localInference.generateResponse(
+        history: conversation,
+      )) {
+        buffer.write(chunk);
         _messages[assistantIndex] = _messages[assistantIndex].copyWith(
-          content: buffer.toString().trimRight(),
+          content: buffer.toString(),
         );
         notifyListeners();
-        await Future<void>.delayed(const Duration(milliseconds: 28));
       }
 
+      final finalContent = buffer.toString().trimRight();
       _messages[assistantIndex] = _messages[assistantIndex].copyWith(
-        content: generated,
+        content: finalContent.isEmpty
+            ? '($modelName herhangi bir yanıt üretmedi)'
+            : finalContent,
       );
       await _persistSession();
     } catch (err) {
       _error = 'Yerel yanıt oluşturulamadı: $err';
+      while (_messages.isNotEmpty && _messages.last.role != ChatRole.user) {
+        _messages.removeLast();
+      }
+      if (_messages.isNotEmpty && _messages.last.role == ChatRole.user) {
+        _messages.removeLast();
+      }
       notifyListeners();
     } finally {
       _isSending = false;
       _flowState = ChatFlowState.idle;
       notifyListeners();
     }
-  }
-
-  String _synthesiseOfflineResponse(String prompt, String modelName) {
-    final lines = prompt
-        .split(RegExp(r'[\r\n]+'))
-        .map((line) => line.trim())
-        .where((line) => line.isNotEmpty)
-        .toList();
-    final bullets = lines.take(3).map((line) => '- $line').join('\n');
-
-    final keywords = prompt
-        .split(RegExp(r'[^a-zA-Z0-9çğıöşüÇĞİÖŞÜ]+'))
-        .where((part) => part.length > 3)
-        .map((part) => part.toLowerCase())
-        .toSet()
-        .take(5)
-        .toList(growable: false);
-
-    final buffer = StringBuffer()
-      ..writeln('**$modelName** yerel yanıtı')
-      ..writeln()
-      ..writeln('Metni şu şekilde yorumladım:');
-
-    if (bullets.isNotEmpty) {
-      buffer
-        ..writeln(bullets)
-        ..writeln();
-    }
-
-    if (keywords.isNotEmpty) {
-      buffer
-        ..writeln('Öne çıkan anahtarlar: ${keywords.join(', ')}')
-        ..writeln();
-    }
-
-    buffer.writeln(
-      'Bu yanıt cihaz üzerinde simüle edildi ve gerçek model çıktısını temsil etmez.',
-    );
-
-    return buffer.toString().trimRight();
   }
 
   Future<void> loadSession(String sessionId) async {
@@ -302,29 +298,38 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> deleteSession(String sessionId) async {
+    final deletingCurrent = _sessionId == sessionId;
     await _storage.deleteSession(sessionId);
     final sessions = await _storage.loadSessions();
     _history
       ..clear()
       ..addAll(sessions);
+    if (deletingCurrent) {
+      if (sessions.isNotEmpty) {
+        final next = sessions.first;
+        _sessionId = next.id;
+        _createdAt = next.createdAt;
+        _messages
+          ..clear()
+          ..addAll(next.messages);
+        _flowState = ChatFlowState.idle;
+        _isSending = false;
+        _error = null;
+      } else {
+        _messages.clear();
+        _flowState = ChatFlowState.idle;
+        _isSending = false;
+        _error = null;
+        _beginNewSession();
+      }
+    }
     notifyListeners();
   }
 
   Future<ShareResultStatus> shareSession(ChatSession session) async {
     final text = session.toShareText();
-    final fileName =
-        'orbit_chat_${session.createdAt.toIso8601String().replaceAll(':', '-')}.txt';
     try {
-      final file = XFile.fromData(
-        utf8.encode(text),
-        mimeType: 'text/plain',
-        name: fileName,
-      );
-      final result = await Share.shareXFiles(
-        [file],
-        text: text,
-        subject: session.title,
-      );
+      final result = await Share.share(text, subject: session.title);
       if (result.status == ShareResultStatus.unavailable) {
         await Clipboard.setData(ClipboardData(text: text));
       }
@@ -364,5 +369,11 @@ class ChatController extends ChangeNotifier {
       createdAt: _createdAt ?? DateTime.now(),
       messages: List<ChatMessage>.from(_messages),
     );
+  }
+
+  @override
+  void dispose() {
+    unawaited(_localInference.dispose());
+    super.dispose();
   }
 }

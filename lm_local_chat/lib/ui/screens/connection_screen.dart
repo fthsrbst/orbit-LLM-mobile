@@ -102,7 +102,19 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                                   crossAxisAlignment:
                                       CrossAxisAlignment.stretch,
                                   children: [
-                                    const SizedBox(height: 24),
+                                    if (Navigator.of(context).canPop())
+                                      Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: IconButton(
+                                          icon: const Icon(
+                                            Icons.arrow_back_rounded,
+                                          ),
+                                          tooltip: 'Geri',
+                                          onPressed: () =>
+                                              Navigator.of(context).maybePop(),
+                                        ),
+                                      ),
+                                    const SizedBox(height: 12),
                                     Text(
                                       'orbit',
                                       textAlign: TextAlign.center,

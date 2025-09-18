@@ -10,8 +10,8 @@ import 'controllers/session_controller.dart';
 import 'controllers/settings_controller.dart';
 import 'services/chat_storage_service.dart';
 import 'services/lm_studio_service.dart';
+import 'services/local_inference_service.dart';
 import 'ui/screens/chat_screen.dart';
-import 'ui/screens/connection_screen.dart';
 import 'ui/widgets/animated_background.dart';
 
 void main() {
@@ -32,6 +32,7 @@ class _OrbitAppState extends State<OrbitApp> {
   late final ChatStorageService _chatStorage;
   late final ChatController _chatController;
   late final LocalModelController _localModelController;
+  late final LocalInferenceService _localInferenceService;
   late final SettingsController _settingsController;
   bool _bootstrapped = false;
   String? _lastHost;
@@ -45,10 +46,12 @@ class _OrbitAppState extends State<OrbitApp> {
     _service = LmStudioService();
     _sessionController = SessionController(_service);
     _chatStorage = ChatStorageService();
+    _localInferenceService = LocalInferenceService();
     _chatController = ChatController(
       _service,
       _sessionController,
       _chatStorage,
+      _localInferenceService,
     );
     _localModelController = LocalModelController();
     _settingsController = SettingsController();
@@ -96,6 +99,7 @@ class _OrbitAppState extends State<OrbitApp> {
     _sessionController.dispose();
     _chatController.dispose();
     _localModelController.dispose();
+    unawaited(_localInferenceService.dispose());
     _settingsController.dispose();
     super.dispose();
   }
@@ -202,24 +206,12 @@ class _OrbitAppState extends State<OrbitApp> {
                 duration: const Duration(milliseconds: 500),
                 child: !_bootstrapped
                     ? const _SplashScreen()
-                    : AnimatedBuilder(
-                        animation: _sessionController,
-                        builder: (context, _) {
-                          final isReady = _sessionController.isReady;
-                          return isReady
-                              ? ChatScreen(
-                                  key: const ValueKey('chat'),
-                                  sessionController: _sessionController,
-                                  chatController: _chatController,
-                                  settingsController: _settingsController,
-                                  localModelController: _localModelController,
-                                )
-                              : ConnectionScreen(
-                                  key: const ValueKey('connection'),
-                                  sessionController: _sessionController,
-                                  settingsController: _settingsController,
-                                );
-                        },
+                    : ChatScreen(
+                        key: const ValueKey('chat'),
+                        sessionController: _sessionController,
+                        chatController: _chatController,
+                        settingsController: _settingsController,
+                        localModelController: _localModelController,
                       ),
               ),
               if (_showOnboarding)

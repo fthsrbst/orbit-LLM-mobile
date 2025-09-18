@@ -6,14 +6,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher_string.dart';
 
 import '../../controllers/chat_controller.dart';
+import '../../controllers/local_model_controller.dart';
 import '../../controllers/session_controller.dart';
 import '../../controllers/settings_controller.dart';
-import '../../controllers/local_model_controller.dart';
 import '../../models/chat_message.dart';
 import '../../models/chat_session.dart';
 import '../widgets/animated_background.dart';
+import 'connection_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
@@ -112,7 +114,8 @@ class _ChatScreenState extends State<ChatScreen>
 
     if (isStarMode &&
         (localActive == null ||
-            localActive.status != LocalModelStatus.installed)) {
+            localActive.status != LocalModelStatus.installed ||
+            localActive.localPath == null)) {
       _showSnackBar(
         'Yerel modeli kullanmak için Modelleri yönet bölümünden bir model indirip etkinleştirin.',
       );
@@ -127,6 +130,8 @@ class _ChatScreenState extends State<ChatScreen>
         composed,
         forceOffline: true,
         offlineModelName: localActive!.descriptor.name,
+        offlineModelId: localActive.descriptor.id,
+        offlineModelPath: localActive.localPath,
       );
     } else {
       await widget.chatController.sendMessage(composed);
@@ -277,6 +282,7 @@ class _ChatScreenState extends State<ChatScreen>
       builder: (context) => const _MenuCard(
         actions: [
           _HeaderMenuItem(_HeaderMenuAction.history, 'Sohbet geçmişi'),
+          _HeaderMenuItem(_HeaderMenuAction.connection, 'Bağlantı'),
           _HeaderMenuItem(_HeaderMenuAction.newChat, 'Yeni sohbet'),
           _HeaderMenuItem(_HeaderMenuAction.settings, 'Ayarlar'),
         ],
@@ -286,6 +292,9 @@ class _ChatScreenState extends State<ChatScreen>
     switch (action) {
       case _HeaderMenuAction.history:
         _showHistorySheet(context, widget.chatController);
+        break;
+      case _HeaderMenuAction.connection:
+        _openConnection();
         break;
       case _HeaderMenuAction.newChat:
         unawaited(widget.chatController.startNewChat());
@@ -311,6 +320,18 @@ class _ChatScreenState extends State<ChatScreen>
         child: SettingsSheet(
           controller: widget.settingsController,
           sessionController: widget.sessionController,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openConnection() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (context) => ConnectionScreen(
+          sessionController: widget.sessionController,
+          settingsController: widget.settingsController,
         ),
       ),
     );
@@ -418,6 +439,13 @@ class _ChatScreenState extends State<ChatScreen>
                               child: _LocalModelBanner(
                                 controller: widget.localModelController,
                                 onManage: _openLocalModels,
+                              ),
+                            ),
+                          if (!isStarMode && !session.isReady)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                              child: _ConnectionReminder(
+                                onConnect: _openConnection,
                               ),
                             ),
                           Expanded(
@@ -895,7 +923,7 @@ class _ModelShortcutButton extends StatelessWidget {
     return SizedBox(
       height: 48,
       child: Align(
-        alignment: Alignment.centerRight,
+        alignment: Alignment.centerLeft,
         child: Tooltip(
           message: 'Model seç: $label',
           child: Material(
@@ -1001,22 +1029,27 @@ class _MenuCard extends StatelessWidget {
           children: actions
               .map(
                 (item) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  padding: const EdgeInsets.symmetric(vertical: 4),
                   child: TextButton(
                     onPressed: () => Navigator.of(context).pop(item.action),
                     style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
-                        vertical: 14,
+                        vertical: 10,
                         horizontal: 12,
                       ),
-                      alignment: Alignment.center,
+                      alignment: Alignment.centerLeft,
                     ),
                     child: Text(
                       item.label,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontSize: 26,
-                        letterSpacing: 0.6,
-                      ),
+                      style:
+                          theme.textTheme.displaySmall?.copyWith(
+                            fontSize: 34,
+                            letterSpacing: 0.4,
+                          ) ??
+                          theme.textTheme.titleLarge?.copyWith(
+                            fontSize: 34,
+                            letterSpacing: 0.4,
+                          ),
                     ),
                   ),
                 ),
@@ -1113,6 +1146,54 @@ class _HistorySheet extends StatelessWidget {
   }
 }
 
+class _ConnectionReminder extends StatelessWidget {
+  const _ConnectionReminder({required this.onConnect});
+
+  final VoidCallback onConnect;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(
+          alpha: theme.brightness == Brightness.dark ? 0.35 : 0.75,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Bağlantı yapılandırılmadı',
+                  style: theme.textTheme.titleSmall,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Orbit modunda sohbet başlatmak için LM Studio sunucusunu bağla veya star moduna geç.',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          FilledButton.tonal(
+            onPressed: onConnect,
+            child: const Text('Bağlantıyı ayarla'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _LocalModelBanner extends StatelessWidget {
   const _LocalModelBanner({required this.controller, required this.onManage});
 
@@ -1195,21 +1276,58 @@ class _StarModePanel extends StatelessWidget {
         if (models.isEmpty) {
           return const Center(child: CircularProgressIndicator());
         }
-        return ListView.separated(
-          itemCount: models.length,
-          separatorBuilder: (_, __) => const SizedBox(height: 16),
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          itemBuilder: (context, index) {
-            final model = models[index];
-            final isActive =
-                controller.activeModelState?.descriptor.id ==
-                model.descriptor.id;
-            return _StarModelTile(
-              state: model,
-              isActive: isActive,
-              onActivate: onActivate,
-              onDownload: () => controller.startDownload(model.descriptor.id),
-              onRemove: () => controller.removeModel(model.descriptor.id),
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final maxHeight = constraints.maxHeight;
+            final panelHeight = maxHeight.isFinite
+                ? maxHeight.clamp(320.0, 640.0)
+                : 520.0;
+            return SizedBox(
+              height: panelHeight,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      IconButton(
+                        tooltip: 'Kapat',
+                        onPressed: () => Navigator.of(context).maybePop(),
+                        icon: const Icon(Icons.arrow_back_rounded),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Yerel modeller',
+                          style: Theme.of(context).textTheme.headlineMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.separated(
+                      itemCount: models.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 16),
+                      padding: const EdgeInsets.fromLTRB(4, 20, 4, 24),
+                      itemBuilder: (context, index) {
+                        final model = models[index];
+                        final isActive =
+                            controller.activeModelState?.descriptor.id ==
+                            model.descriptor.id;
+                        return _StarModelTile(
+                          state: model,
+                          isActive: isActive,
+                          onActivate: onActivate,
+                          onDownload: () =>
+                              controller.startDownload(model.descriptor.id),
+                          onRemove: () =>
+                              controller.removeModel(model.descriptor.id),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
             );
           },
         );
@@ -1230,8 +1348,8 @@ class _StarModelTile extends StatelessWidget {
   final LocalModelState state;
   final bool isActive;
   final Future<void> Function(String id) onActivate;
-  final VoidCallback onDownload;
-  final VoidCallback onRemove;
+  final Future<void> Function() onDownload;
+  final Future<void> Function() onRemove;
 
   @override
   Widget build(BuildContext context) {
@@ -1243,7 +1361,21 @@ class _StarModelTile extends StatelessWidget {
     switch (state.status) {
       case LocalModelStatus.notInstalled:
         actionWidget = FilledButton(
-          onPressed: onDownload,
+          onPressed: () async {
+            final messenger = ScaffoldMessenger.of(context);
+            try {
+              await onDownload();
+            } catch (error) {
+              messenger
+                ..hideCurrentSnackBar()
+                ..showSnackBar(
+                  SnackBar(
+                    content: Text('İndirme başarısız: $error'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+            }
+          },
           child: const Text('İndir'),
         );
         break;
@@ -1295,7 +1427,30 @@ class _StarModelTile extends StatelessWidget {
                     child: const Text('Kullan'),
                   ),
             OutlinedButton.icon(
-              onPressed: onRemove,
+              onPressed: () async {
+                final messenger = ScaffoldMessenger.of(context);
+                try {
+                  await onRemove();
+                  messenger
+                    ..hideCurrentSnackBar()
+                    ..showSnackBar(
+                      SnackBar(
+                        content: Text('${descriptor.name} kaldırıldı.'),
+                        behavior: SnackBarBehavior.floating,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                } catch (error) {
+                  messenger
+                    ..hideCurrentSnackBar()
+                    ..showSnackBar(
+                      SnackBar(
+                        content: Text('Model kaldırılamadı: $error'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                }
+              },
               icon: const Icon(Icons.delete_outline_rounded),
               label: const Text('Kaldır'),
             ),
@@ -1500,79 +1655,70 @@ class _MessageBubble extends StatelessWidget {
             ? CrossAxisAlignment.end
             : CrossAxisAlignment.start,
         children: [
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 300),
-            child: Container(
-              key: ValueKey(
-                message.timestamp.millisecondsSinceEpoch ^
-                    message.content.hashCode,
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+            decoration: BoxDecoration(
+              color: bubbleColor,
+              borderRadius: BorderRadius.only(
+                topLeft: const Radius.circular(24),
+                topRight: const Radius.circular(24),
+                bottomLeft: Radius.circular(isUser ? 18 : 6),
+                bottomRight: Radius.circular(isUser ? 6 : 18),
               ),
-              margin: const EdgeInsets.symmetric(vertical: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-              decoration: BoxDecoration(
-                color: bubbleColor,
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(24),
-                  topRight: const Radius.circular(24),
-                  bottomLeft: Radius.circular(isUser ? 18 : 6),
-                  bottomRight: Radius.circular(isUser ? 6 : 18),
+              border: Border.all(
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.2),
+              ),
+            ),
+            child: MarkdownBody(
+              data: message.content.isEmpty ? ' ' : message.content,
+              shrinkWrap: true,
+              selectable: true,
+              styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                p: textStyle,
+                strong: textStyle?.copyWith(fontWeight: FontWeight.w700),
+                em: textStyle?.copyWith(fontStyle: FontStyle.italic),
+                code: textStyle?.copyWith(
+                  fontFamily: 'monospace',
+                  backgroundColor: theme.colorScheme.surfaceContainerHighest
+                      .withValues(alpha: 0.25),
                 ),
-                border: Border.all(
-                  color: theme.colorScheme.outlineVariant.withValues(
-                    alpha: 0.2,
+                codeblockPadding: const EdgeInsets.all(12),
+                codeblockDecoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest.withValues(
+                    alpha: 0.35,
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                blockquoteDecoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest.withValues(
+                    alpha: 0.3,
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border(
+                    left: BorderSide(
+                      color: theme.colorScheme.primary.withValues(alpha: 0.6),
+                      width: 3,
+                    ),
                   ),
                 ),
               ),
-              child: MarkdownBody(
-                data: message.content.isEmpty ? ' ' : message.content,
-                shrinkWrap: true,
-                selectable: true,
-                styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-                  p: textStyle,
-                  strong: textStyle?.copyWith(fontWeight: FontWeight.w700),
-                  em: textStyle?.copyWith(fontStyle: FontStyle.italic),
-                  code: textStyle?.copyWith(
-                    fontFamily: 'monospace',
-                    backgroundColor: theme.colorScheme.surfaceContainerHighest
-                        .withValues(alpha: 0.25),
-                  ),
-                  codeblockPadding: const EdgeInsets.all(12),
-                  codeblockDecoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest.withValues(
-                      alpha: 0.35,
-                    ),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  blockquoteDecoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest.withValues(
-                      alpha: 0.3,
-                    ),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border(
-                      left: BorderSide(
-                        color: theme.colorScheme.primary.withValues(alpha: 0.6),
-                        width: 3,
+              onTapLink: (text, href, title) {
+                if (href == null) return;
+                Clipboard.setData(ClipboardData(text: href));
+                ScaffoldMessenger.of(context)
+                  ..hideCurrentSnackBar()
+                  ..showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        'Bağlantı panoya kopyalandı',
+                        style: theme.textTheme.bodyMedium,
                       ),
+                      behavior: SnackBarBehavior.floating,
+                      duration: const Duration(seconds: 1),
                     ),
-                  ),
-                ),
-                onTapLink: (text, href, title) {
-                  if (href == null) return;
-                  Clipboard.setData(ClipboardData(text: href));
-                  ScaffoldMessenger.of(context)
-                    ..hideCurrentSnackBar()
-                    ..showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          'Bağlantı panoya kopyalandı',
-                          style: theme.textTheme.bodyMedium,
-                        ),
-                        behavior: SnackBarBehavior.floating,
-                        duration: const Duration(seconds: 1),
-                      ),
-                    );
-                },
-              ),
+                  );
+              },
             ),
           ),
           const SizedBox(height: 2),
@@ -1933,7 +2079,7 @@ class _HeaderMenuItem {
   final String label;
 }
 
-enum _HeaderMenuAction { history, newChat, settings }
+enum _HeaderMenuAction { history, connection, newChat, settings }
 
 class SettingsSheet extends StatefulWidget {
   const SettingsSheet({
@@ -1981,11 +2127,12 @@ class _SettingsSheetState extends State<SettingsSheet> {
     super.dispose();
   }
 
-  Future<void> _saveManualConnection(BuildContext context) async {
+  Future<void> _saveManualConnection() async {
+    final messenger = ScaffoldMessenger.of(context);
     final host = _manualHostController.text.trim();
     final portValue = int.tryParse(_manualPortController.text.trim());
     if (host.isEmpty || portValue == null) {
-      ScaffoldMessenger.of(context)
+      messenger
         ..hideCurrentSnackBar()
         ..showSnackBar(
           const SnackBar(
@@ -1997,9 +2144,9 @@ class _SettingsSheetState extends State<SettingsSheet> {
     }
     setState(() => _isSavingConnection = true);
     await widget.sessionController.setConnection(host: host, port: portValue);
-    if (!context.mounted) return;
+    if (!mounted) return;
     setState(() => _isSavingConnection = false);
-    ScaffoldMessenger.of(context)
+    messenger
       ..hideCurrentSnackBar()
       ..showSnackBar(
         const SnackBar(
@@ -2009,6 +2156,24 @@ class _SettingsSheetState extends State<SettingsSheet> {
       );
   }
 
+  Future<void> _openLink(String url) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final launched = await launchUrlString(
+      url,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!launched && mounted) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Bağlantı açılamadı: $url'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -2016,10 +2181,9 @@ class _SettingsSheetState extends State<SettingsSheet> {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        return Padding(
+        return SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Center(
@@ -2032,11 +2196,23 @@ class _SettingsSheetState extends State<SettingsSheet> {
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
-              Text(
-                'Ayarlar',
-                style: theme.textTheme.headlineMedium,
-                textAlign: TextAlign.center,
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back_rounded),
+                    tooltip: 'Kapat',
+                    onPressed: () => Navigator.of(context).maybePop(),
+                  ),
+                  Expanded(
+                    child: Text(
+                      'Ayarlar',
+                      style: theme.textTheme.headlineMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  const SizedBox(width: 48),
+                ],
               ),
               const SizedBox(height: 24),
               Text('Tema modu', style: theme.textTheme.titleMedium),
@@ -2159,9 +2335,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
               Align(
                 alignment: Alignment.centerRight,
                 child: FilledButton(
-                  onPressed: _isSavingConnection
-                      ? null
-                      : () => _saveManualConnection(context),
+                  onPressed: _isSavingConnection ? null : _saveManualConnection,
                   child: _isSavingConnection
                       ? const SizedBox(
                           width: 20,
@@ -2177,7 +2351,24 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 value: controller.useShader,
                 onChanged: (value) => controller.setShaderEnabled(value),
               ),
+              const SizedBox(height: 24),
+              Divider(
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.4),
+              ),
               const SizedBox(height: 16),
+              Text('Hakkında', style: theme.textTheme.titleMedium),
+              const SizedBox(height: 12),
+              Text(
+                'Orbit, Fatih tarafından geliştirildi. Daha fazlası için GitHub profilini ziyaret edebilirsin.',
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 12),
+              FilledButton.tonalIcon(
+                onPressed: () => _openLink('https://github.com/fatih'),
+                icon: const Icon(Icons.link_rounded),
+                label: const Text('github.com/fatih'),
+              ),
+              const SizedBox(height: 12),
             ],
           ),
         );
