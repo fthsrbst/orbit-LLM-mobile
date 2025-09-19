@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../feature_flags.dart';
+
 enum AppMode { orbit, star }
 
 class SettingsController extends ChangeNotifier {
@@ -33,7 +35,13 @@ class SettingsController extends ChangeNotifier {
     if (modeIndex != null &&
         modeIndex >= 0 &&
         modeIndex < AppMode.values.length) {
-      _appMode = AppMode.values[modeIndex];
+      final storedMode = AppMode.values[modeIndex];
+      if (!FeatureFlags.starModeEnabled && storedMode == AppMode.star) {
+        _appMode = AppMode.orbit;
+        await prefs.setInt(_modeKey, _appMode.index);
+      } else {
+        _appMode = storedMode;
+      }
     }
     final themeIndex = prefs.getInt(_themeKey);
     if (themeIndex != null &&
@@ -52,11 +60,14 @@ class SettingsController extends ChangeNotifier {
   }
 
   Future<void> setAppMode(AppMode mode) async {
-    if (_appMode == mode) return;
-    _appMode = mode;
+    final nextMode = !FeatureFlags.starModeEnabled && mode == AppMode.star
+        ? AppMode.orbit
+        : mode;
+    if (_appMode == nextMode) return;
+    _appMode = nextMode;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_modeKey, mode.index);
+    await prefs.setInt(_modeKey, _appMode.index);
   }
 
   Future<void> setThemeMode(ThemeMode mode) async {

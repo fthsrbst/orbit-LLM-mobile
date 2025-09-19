@@ -12,6 +12,7 @@ import '../../controllers/chat_controller.dart';
 import '../../controllers/local_model_controller.dart';
 import '../../controllers/session_controller.dart';
 import '../../controllers/settings_controller.dart';
+import '../../feature_flags.dart';
 import '../../models/chat_message.dart';
 import '../../models/chat_session.dart';
 import '../widgets/animated_background.dart';
@@ -873,19 +874,23 @@ class _ModeToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final starEnabled = FeatureFlags.starModeEnabled;
+    final starLabel = starEnabled ? 'star' : 'star (yakında)';
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         _ModeToggleItem(
           label: 'orbit',
-          isActive: mode == AppMode.orbit,
+          isActive:
+              mode == AppMode.orbit || (!starEnabled && mode == AppMode.star),
           onTap: () => onChanged(AppMode.orbit),
         ),
         const SizedBox(width: 12),
         _ModeToggleItem(
-          label: 'star',
-          isActive: mode == AppMode.star,
-          onTap: () => onChanged(AppMode.star),
+          label: starLabel,
+          isActive: starEnabled && mode == AppMode.star,
+          onTap: starEnabled ? () => onChanged(AppMode.star) : null,
+          isEnabled: starEnabled,
         ),
       ],
     );
@@ -896,12 +901,14 @@ class _ModeToggleItem extends StatelessWidget {
   const _ModeToggleItem({
     required this.label,
     required this.isActive,
-    required this.onTap,
+    this.onTap,
+    this.isEnabled = true,
   });
 
   final String label;
   final bool isActive;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
+  final bool isEnabled;
 
   @override
   Widget build(BuildContext context) {
@@ -912,21 +919,35 @@ class _ModeToggleItem extends StatelessWidget {
         const TextStyle(fontSize: 28);
     final activeColor = baseStyle.color ?? theme.colorScheme.onSurface;
     final inactiveColor = activeColor.withValues(alpha: 0.35);
+    final disabledColor = activeColor.withValues(alpha: 0.18);
+    final isInteractive = isEnabled && onTap != null;
+    final targetColor = isActive
+        ? activeColor
+        : (isInteractive ? inactiveColor : disabledColor);
+    final opacity = isActive ? 1.0 : (isInteractive ? 0.45 : 0.25);
+    final fontSize = isActive
+        ? baseStyle.fontSize
+        : (baseStyle.fontSize ?? 28) - 4;
+
     return GestureDetector(
-      onTap: onTap,
-      child: AnimatedDefaultTextStyle(
-        duration: const Duration(milliseconds: 220),
-        style: baseStyle.copyWith(
-          color: isActive ? activeColor : inactiveColor,
-          fontSize: isActive
-              ? baseStyle.fontSize
-              : (baseStyle.fontSize ?? 28) - 4,
-          letterSpacing: isActive ? 1.2 : 0.8,
-        ),
-        child: AnimatedOpacity(
+      onTap: isInteractive ? onTap : null,
+      behavior: HitTestBehavior.opaque,
+      child: Semantics(
+        button: true,
+        enabled: isInteractive,
+        selected: isActive,
+        child: AnimatedDefaultTextStyle(
           duration: const Duration(milliseconds: 220),
-          opacity: isActive ? 1 : 0.45,
-          child: Text(label),
+          style: baseStyle.copyWith(
+            color: targetColor,
+            fontSize: fontSize,
+            letterSpacing: isActive ? 1.2 : 0.8,
+          ),
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 220),
+            opacity: opacity,
+            child: Text(label),
+          ),
         ),
       ),
     );
@@ -1199,6 +1220,9 @@ class _ConnectionReminder extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final description = FeatureFlags.starModeEnabled
+        ? 'Orbit modunda sohbet başlatmak için LM Studio sunucusunu bağla veya star moduna geç.'
+        : 'Orbit modunda sohbet başlatmak için LM Studio sunucusunu bağla. Star modu geçici olarak devre dışı.';
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
@@ -1221,10 +1245,7 @@ class _ConnectionReminder extends StatelessWidget {
                   style: theme.textTheme.titleSmall,
                 ),
                 const SizedBox(height: 6),
-                Text(
-                  'Orbit modunda sohbet başlatmak için LM Studio sunucusunu bağla veya star moduna geç.',
-                  style: theme.textTheme.bodySmall,
-                ),
+                Text(description, style: theme.textTheme.bodySmall),
               ],
             ),
           ),
