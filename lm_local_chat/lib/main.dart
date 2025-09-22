@@ -1,18 +1,18 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'controllers/chat_controller.dart';
-import 'controllers/local_model_controller.dart';
 import 'controllers/session_controller.dart';
 import 'controllers/settings_controller.dart';
 import 'services/chat_storage_service.dart';
 import 'services/lm_studio_service.dart';
-import 'services/local_inference_service.dart';
 import 'ui/screens/chat_screen.dart';
 import 'ui/widgets/animated_background.dart';
+import 'l10n/app_localizations.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,8 +31,6 @@ class _OrbitAppState extends State<OrbitApp> {
   late final SessionController _sessionController;
   late final ChatStorageService _chatStorage;
   late final ChatController _chatController;
-  late final LocalModelController _localModelController;
-  late final LocalInferenceService _localInferenceService;
   late final SettingsController _settingsController;
   bool _bootstrapped = false;
   String? _lastHost;
@@ -46,14 +44,11 @@ class _OrbitAppState extends State<OrbitApp> {
     _service = LmStudioService();
     _sessionController = SessionController(_service);
     _chatStorage = ChatStorageService();
-    _localInferenceService = LocalInferenceService();
     _chatController = ChatController(
       _service,
       _sessionController,
       _chatStorage,
-      _localInferenceService,
     );
-    _localModelController = LocalModelController();
     _settingsController = SettingsController();
     _sessionController.addListener(_handleSessionChanged);
     _bootstrap();
@@ -63,7 +58,6 @@ class _OrbitAppState extends State<OrbitApp> {
     await _settingsController.initialise();
     await _sessionController.initialise();
     await _chatController.initialise();
-    await _localModelController.initialise();
     _lastHost = _sessionController.host;
     final prefs = await SharedPreferences.getInstance();
     final hasSeenOnboarding = prefs.getBool(_onboardingKey) ?? false;
@@ -98,8 +92,6 @@ class _OrbitAppState extends State<OrbitApp> {
     _service.dispose();
     _sessionController.dispose();
     _chatController.dispose();
-    _localModelController.dispose();
-    unawaited(_localInferenceService.dispose());
     _settingsController.dispose();
     super.dispose();
   }
@@ -187,11 +179,19 @@ class _OrbitAppState extends State<OrbitApp> {
       animation: _settingsController,
       builder: (context, _) {
         return MaterialApp(
-          title: 'Orbit',
+          onGenerateTitle: (context) => context.l10n.translate('app_title'),
           debugShowCheckedModeBanner: false,
           theme: _buildTheme(Brightness.light),
           darkTheme: _buildTheme(Brightness.dark),
           themeMode: _settingsController.themeMode,
+          locale: _settingsController.localeOverride,
+          supportedLocales: AppLocalizations.supportedLocales,
+          localizationsDelegates: const [
+            AppLocalizations.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
           builder: (context, child) {
             final media = MediaQuery.of(context);
             final scaler = TextScaler.linear(_settingsController.textScale);
@@ -211,7 +211,6 @@ class _OrbitAppState extends State<OrbitApp> {
                         sessionController: _sessionController,
                         chatController: _chatController,
                         settingsController: _settingsController,
-                        localModelController: _localModelController,
                       ),
               ),
               if (_showOnboarding)

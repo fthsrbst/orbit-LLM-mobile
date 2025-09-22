@@ -1,142 +1,88 @@
-# Orbit
+# LM Local Chat (Orbit)
 
-Orbit is a polished, mobile-first Flutter client for running privacy-friendly AI conversations entirely on your own hardware. It can auto-discover [LM Studio](https://lmstudio.ai) instances on your LAN, fall back to manually defined servers, or switch into an offline mode that drives quantised GGUF models directly on the device.
+Modern, yerel-öncelikli bir Flutter sohbet istemcisi. iOS ve Android’de çalışır; aynı ağdaki [LM Studio](https://lmstudio.ai) örneklerini otomatik bulur, gerekirse manuel bağlanır ve tamamen çevrimdışı senaryolar için yerel modellere geçişe imkân tanır.
 
-> ⚠️ Orbit is evolving quickly. Expect new capabilities and occasional breaking changes while we round out the 1.0 experience.
+> Not: Proje aktif geliştirme altındadır. 1.0 deneyimini tamamlayana kadar hızlı eklemeler ve ara sıra kırıcı değişiklikler olabilir.
 
-## Why Orbit?
+## Öne Çıkanlar
 
-- **Local-first by design** – connect to LM Studio or run quantised models on device; no cloud required.
-- **Two focused modes** – *Orbit* (networked streaming) and *Star* (offline inference) with a single tap toggle.
-- **Live feedback** – token streaming, contextual statuses, and inline performance hints keep you in the loop.
-- **Thoughtful UI** – shader-driven backgrounds, adaptive typography, and accent colours that carry across iOS and Android.
-- **Cancelable downloads** – pause or abort large model pulls without leaving orphaned files.
-- **Built to persist** – conversations and settings are cached locally so you can resume exactly where you left off.
+- **Yerel-öncelikli mimari**: Veriler cihazınızda kalır; bulut zorunlu değildir.
+- **Anlık akış**: Token bazlı akış ve anlık durum bildirimleri (`tokens/s` dahil).
+- **Düşünceli arayüz**: Shader tabanlı arka plan, uyarlanabilir tipografi, iOS/Android’de tutarlı vurgu renkleri.
+- **Kalıcı geçmiş**: Sohbetler ve ayarlar cihazda saklanır; kaldığınız yerden devam edin.
 
-## Feature Matrix
+## Hızlı Başlangıç
 
-| Area | Orbit Mode (LM Studio) | Star Mode (Offline) |
-| --- | --- | --- |
-| Discovery | mDNS broadcast scan + manual override | n/a |
-| Model management | Remote list + quick switcher | Local GGUF catalogue (download, cancel, remove, activate) |
-| Response handling | SSE streaming with tokens/sec telemetry | On-device llama.cpp runtime with progress logging |
-| UX niceties | Animated shader backdrop, history sheet, share/export | Starfield overlay, local model banner, offline guardrails |
+### Gereksinimler
 
-## Quick Start
+- Flutter 3.35+ (Dart 3.9+)
+- iOS için Xcode 15+, Android için en güncel Android Studio
+- Orbit modu için aynı LAN üzerinde çalışan LM Studio (opsiyonel)
 
-### Prerequisites
-
-- Flutter 3.19 (Dart 3.3) or newer
-- Xcode 15+ (for iOS) / Android Studio Electric Eel+ (for Android)
-- LM Studio 0.2+ accessible on the same LAN for Orbit mode
-- For Star mode, ensure the device has enough storage and the `libllama` binary packaged with `llama_cpp_dart`
-
-Verify your toolchain:
+### Kurulum
 
 ```bash
-flutter --version
-```
-
-### Clone & bootstrap
-
-```bash
-git clone https://github.com/<your-org>/orbit.git
-cd orbit
+git clone https://github.com/fthsrbst/project.git
+cd project/lm_local_chat
 flutter pub get
 ```
 
-### Launch
+### Çalıştırma
 
 ```bash
-# List devices
-devices=$(flutter devices)
-echo "$devices"
+# Cihazları listele
+flutter devices
 
-# Run (replace <device-id> with the desired identifier)
-flutter run -d <device-id>
+# iOS/Android cihazda çalıştır
+flutter run -d <cihaz-id>
 ```
 
-On first launch the app will ask for **Local Network** permission on iOS so it can discover LM Studio instances.
+iOS’ta ilk açılışta **Yerel Ağ** izni istenir; LM Studio keşfi için gereklidir.
 
-## Star Mode: Local Model Workflow
+## Derleme
 
-1. Open the mode toggle and switch to **star**.
-2. Tap **Modelleri yönet** to open the local model sheet.
-3. Pick a descriptor (e.g. *Phi-3 Mini 4K Q4*) and tap **İndir**.
-4. Downloads stream with live progress and an **İptal** action; cancelled pulls tidy up partially written files.
-5. Once installed, choose **Kullan** to activate the model, then start chatting fully offline.
+### iOS (cihaz)
 
-### Troubleshooting the llama runtime
+```bash
+cd lm_local_chat
+flutter build ios --release
+```
 
-- The app auto-detects the bundled `libllama` binary shipped with `llama_cpp_dart` based on the current ABI.
-- Set `ORBIT_LLAMA_LIBRARY=/path/to/libllama.dylib` (or `.dll`/`.so`) if you need to override the search path.
-- Debug logs (visible in `flutter run`) are prefixed with `[LocalInference]` for quick filtering.
+Xcode otomatik imzalama açık ise fiziksel cihaz için imzalama kendiliğinden yapılır.
 
-## Project Structure
+### Android (APK)
+
+```bash
+cd lm_local_chat
+flutter build apk --release
+```
+
+Çıktı: `lm_local_chat/build/app/outputs/flutter-apk/app-release.apk`
+
+## Mimari Özeti
 
 ```text
 lib/
-├── controllers/
-│   ├── chat_controller.dart        # Conversation orchestration & persistence
-│   ├── local_model_controller.dart # Offline model catalogue & download manager
-│   ├── session_controller.dart     # LM Studio discovery, connection, model selection
-│   └── settings_controller.dart    # Theme, accent, typography, shader toggles
-├── services/
-│   ├── lm_studio_service.dart      # REST/SSE bridge to LM Studio
-│   └── local_inference_service.dart# llama.cpp integration for Star mode
-├── ui/
-│   ├── screens/
-│   │   ├── chat_screen.dart        # Main chat shell, header, mode toggle
-│   │   └── connection_screen.dart  # Onboarding & manual connection flow
-│   └── widgets/
-│       └── animated_background.dart
-└── models/                         # Plain data models for chat + settings
+├── controllers/           # durum yönetimi (ChangeNotifier)
+├── services/              # LM Studio köprüsü ve depolama yardımcıları
+├── ui/                    # ekranlar ve bileşenler
+└── models/                # veri modelleri
 ```
 
-## Development
-
-### Useful commands
+## Geliştirme
 
 ```bash
-flutter pub get
 flutter analyze
 flutter test
 dart format lib test
 ```
 
-### Regenerating launcher icons
-
-The new `assets/icons/orbit_icon.png` drives all platforms. Regenerate when the asset changes:
+Başlatıcı ikonlarını güncellemek için:
 
 ```bash
 flutter pub run flutter_launcher_icons
 ```
 
-### Coding guidelines
+## Lisans
 
-- Follow the lint configuration in `analysis_options.yaml` (based on `flutter_lints`).
-- Keep UI copy bilingual where relevant (TR/EN) across settings and toasts.
-- Prefer the existing `ChangeNotifier` pattern to maintain consistency.
-
-## Roadmap
-
-- Curated GGUF bundles with friendly licensing for Star mode out-of-the-box.
-- Enhanced markdown rendering (tables, callouts, expandable sections).
-- Desktop builds (macOS, Windows, Linux) after the mobile UX stabilises.
-- Scenario presets that auto-load prompts and recommended models.
-
-## Contributing
-
-Contributions are welcome! To get involved:
-
-1. Open an Issue for significant proposals so we can align on scope.
-2. Fork the repo, branch off `main`, and keep commits focused.
-3. Include reproduction steps or manual test notes in pull requests.
-
-## License
-
-Orbit is released under the [MIT License](LICENSE). You are free to use, modify, and distribute it with attribution.
-
----
-
-Built with ♥️ for developers who value dependable, private AI tooling.
+MIT Lisansı. Ayrıntılar için `LICENSE` dosyasına bakın.

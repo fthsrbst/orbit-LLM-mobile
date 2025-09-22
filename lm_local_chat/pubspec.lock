@@ -166,6 +166,11 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "5.0.0"
+  flutter_localizations:
+    dependency: "direct main"
+    description: flutter
+    source: sdk
+    version: "0.0.0"
   flutter_markdown:
     dependency: "direct main"
     description:
@@ -224,6 +229,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.5.4"
+  intl:
+    dependency: "direct main"
+    description:
+      name: intl
+      sha256: "3df61194eb431efc39c4ceba583b95633a403f46c9fd341e550ce0bfa50e9aa5"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.20.2"
   json_annotation:
     dependency: transitive
     description:
@@ -264,14 +277,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "5.1.1"
-  llama_cpp_dart:
-    dependency: "direct main"
-    description:
-      name: llama_cpp_dart
-      sha256: "7351764e4901014a87bc0e46bb7fd1e63597f08db7ad877844d03122d063a6c1"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.1.0"
   markdown:
     dependency: transitive
     description:
@@ -541,14 +546,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.4.0"
-  typed_isolate:
-    dependency: transitive
-    description:
-      name: typed_isolate
-      sha256: e245b87368104f9da13a75268e0bce16a2a8d4c9a4194a5eb50bb569be680c65
-      url: "https://pub.dev"
-    source: hosted
-    version: "6.0.0"
   url_launcher:
     dependency: "direct main"
     description:

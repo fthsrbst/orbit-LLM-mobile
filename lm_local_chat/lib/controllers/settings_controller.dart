@@ -1,40 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum AppMode { orbit, star }
-
 class SettingsController extends ChangeNotifier {
   SettingsController();
 
-  static const _modeKey = 'settings_app_mode';
   static const _themeKey = 'settings_theme_mode';
   static const _accentKey = 'settings_accent_color';
   static const _fontKey = 'settings_body_font';
   static const _scaleKey = 'settings_text_scale';
   static const _shaderKey = 'settings_shader_enabled';
+  static const _localeKey = 'settings_locale_override';
 
-  AppMode _appMode = AppMode.orbit;
   ThemeMode _themeMode = ThemeMode.system;
   Color _accentColor = const Color(0xFF6C6CFF);
   String _bodyFont = 'Outfit';
   double _textScale = 0.9;
   bool _useShader = true;
+  String? _localeCode;
 
-  AppMode get appMode => _appMode;
   ThemeMode get themeMode => _themeMode;
   Color get accentColor => _accentColor;
   String get bodyFont => _bodyFont;
   double get textScale => _textScale;
   bool get useShader => _useShader;
+  Locale? get localeOverride =>
+      _localeCode == null ? null : Locale(_localeCode!);
 
   Future<void> initialise() async {
     final prefs = await SharedPreferences.getInstance();
-    final modeIndex = prefs.getInt(_modeKey);
-    if (modeIndex != null &&
-        modeIndex >= 0 &&
-        modeIndex < AppMode.values.length) {
-      _appMode = AppMode.values[modeIndex];
-    }
     final themeIndex = prefs.getInt(_themeKey);
     if (themeIndex != null &&
         themeIndex >= 0 &&
@@ -48,15 +41,13 @@ class SettingsController extends ChangeNotifier {
     _bodyFont = prefs.getString(_fontKey) ?? _bodyFont;
     _textScale = prefs.getDouble(_scaleKey) ?? _textScale;
     _useShader = prefs.getBool(_shaderKey) ?? _useShader;
+    final storedLocale = prefs.getString(_localeKey);
+    if (storedLocale == null || storedLocale.isEmpty) {
+      _localeCode = null;
+    } else {
+      _localeCode = storedLocale;
+    }
     notifyListeners();
-  }
-
-  Future<void> setAppMode(AppMode mode) async {
-    if (_appMode == mode) return;
-    _appMode = mode;
-    notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_modeKey, mode.index);
   }
 
   Future<void> setThemeMode(ThemeMode mode) async {
@@ -96,6 +87,22 @@ class SettingsController extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_shaderKey, value);
+  }
+
+  Future<void> setLocaleOverride(String? languageCode) async {
+    final normalized = languageCode?.trim();
+    final nextCode = normalized == null || normalized.isEmpty
+        ? null
+        : normalized.toLowerCase();
+    if (_localeCode == nextCode) return;
+    _localeCode = nextCode;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    if (nextCode == null) {
+      await prefs.remove(_localeKey);
+    } else {
+      await prefs.setString(_localeKey, nextCode);
+    }
   }
 
   String _toHex(Color color) =>

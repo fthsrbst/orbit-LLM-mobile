@@ -5,16 +5,18 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:intl/intl.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
 import '../../controllers/chat_controller.dart';
-import '../../controllers/local_model_controller.dart';
 import '../../controllers/session_controller.dart';
 import '../../controllers/settings_controller.dart';
 import '../../models/chat_message.dart';
 import '../../models/chat_session.dart';
+import '../../l10n/app_localizations.dart';
 import '../widgets/animated_background.dart';
+import '../widgets/settings_sheet.dart';
 import 'connection_screen.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -23,13 +25,11 @@ class ChatScreen extends StatefulWidget {
     required this.sessionController,
     required this.chatController,
     required this.settingsController,
-    required this.localModelController,
   });
 
   final SessionController sessionController;
   final ChatController chatController;
   final SettingsController settingsController;
-  final LocalModelController localModelController;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -61,7 +61,6 @@ class _ChatScreenState extends State<ChatScreen>
       curve: Curves.easeOutCubic,
     );
     widget.chatController.addListener(_scrollToBottomOnUpdate);
-    unawaited(widget.localModelController.initialise());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _introController.forward();
@@ -108,34 +107,11 @@ class _ChatScreenState extends State<ChatScreen>
     }
 
     final composed = _composeMessage(rawText, attachments);
-    final settings = widget.settingsController;
-    final isStarMode = settings.appMode == AppMode.star;
-    final localActive = widget.localModelController.activeModelState;
-
-    if (isStarMode &&
-        (localActive == null ||
-            localActive.status != LocalModelStatus.installed ||
-            localActive.localPath == null)) {
-      _showSnackBar(
-        'Yerel modeli kullanmak için Modelleri yönet bölümünden bir model indirip etkinleştirin.',
-      );
-      return;
-    }
 
     _inputController.clear();
     setState(() => _pendingAttachments.clear());
 
-    if (isStarMode) {
-      await widget.chatController.sendMessage(
-        composed,
-        forceOffline: true,
-        offlineModelName: localActive!.descriptor.name,
-        offlineModelId: localActive.descriptor.id,
-        offlineModelPath: localActive.localPath,
-      );
-    } else {
-      await widget.chatController.sendMessage(composed);
-    }
+    await widget.chatController.sendMessage(composed);
   }
 
   Future<void> _handleShare() async {
@@ -157,31 +133,6 @@ class _ChatScreenState extends State<ChatScreen>
         );
         break;
     }
-  }
-
-  Future<void> _openLocalModels() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      builder: (context) {
-        return Padding(
-          padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 20,
-            bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-          ),
-          child: _StarModePanel(
-            controller: widget.localModelController,
-            onActivate: widget.localModelController.setActiveModel,
-          ),
-        );
-      },
-    );
   }
 
   Future<void> _pickAttachments() async {
@@ -401,8 +352,6 @@ class _ChatScreenState extends State<ChatScreen>
     final chat = widget.chatController;
     final settings = widget.settingsController;
 
-    final isStarMode = settings.appMode == AppMode.star;
-
     return AnimatedBuilder(
       animation: settings,
       builder: (context, _) {
@@ -413,7 +362,6 @@ class _ChatScreenState extends State<ChatScreen>
             onTap: () => FocusScope.of(context).unfocus(),
             child: Stack(
               children: [
-                if (isStarMode) const _StarfieldOverlay(),
                 AnimatedBuilder(
                   animation: _introController,
                   child: Scaffold(
@@ -426,23 +374,9 @@ class _ChatScreenState extends State<ChatScreen>
                             onMenuPressed: _openHeaderMenu,
                             onModelPressed: _openModelSelector,
                             onSharePressed: _handleShare,
-                            onLocalModelsPressed: isStarMode
-                                ? _openLocalModels
-                                : null,
-                            appMode: settings.appMode,
-                            onModeChanged: (mode) =>
-                                unawaited(settings.setAppMode(mode)),
                             collapseModelChip: chat.messages.isNotEmpty,
                           ),
-                          if (isStarMode)
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-                              child: _LocalModelBanner(
-                                controller: widget.localModelController,
-                                onManage: _openLocalModels,
-                              ),
-                            ),
-                          if (!isStarMode && !session.isReady)
+                          if (!session.isReady)
                             Padding(
                               padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
                               child: _ConnectionReminder(
@@ -632,114 +566,6 @@ class _ChatScreenState extends State<ChatScreen>
   }
 }
 
-class _StarfieldOverlay extends StatelessWidget {
-  const _StarfieldOverlay();
-
-  @override
-  Widget build(BuildContext context) {
-    return Positioned.fill(
-      child: IgnorePointer(
-        child: CustomPaint(
-          painter: _StarfieldPainter(Theme.of(context).colorScheme.primary),
-        ),
-      ),
-    );
-  }
-}
-
-class _StarfieldPainter extends CustomPainter {
-  _StarfieldPainter(this.accentColor);
-
-  final Color accentColor;
-
-  static final List<Offset> _stars = <Offset>[
-    const Offset(0.1, 0.2),
-    const Offset(0.25, 0.4),
-    const Offset(0.48, 0.18),
-    const Offset(0.62, 0.55),
-    const Offset(0.78, 0.3),
-    const Offset(0.88, 0.7),
-    const Offset(0.34, 0.75),
-    const Offset(0.15, 0.65),
-    const Offset(0.55, 0.82),
-    const Offset(0.72, 0.9),
-  ];
-
-  static final List<Offset> _sparkles = <Offset>[
-    const Offset(0.06, 0.12),
-    const Offset(0.18, 0.05),
-    const Offset(0.32, 0.14),
-    const Offset(0.44, 0.08),
-    const Offset(0.58, 0.12),
-    const Offset(0.7, 0.08),
-    const Offset(0.82, 0.16),
-    const Offset(0.9, 0.22),
-    const Offset(0.08, 0.46),
-    const Offset(0.2, 0.58),
-    const Offset(0.4, 0.62),
-    const Offset(0.68, 0.44),
-    const Offset(0.84, 0.48),
-    const Offset(0.12, 0.86),
-    const Offset(0.28, 0.92),
-    const Offset(0.46, 0.9),
-    const Offset(0.62, 0.84),
-    const Offset(0.8, 0.88),
-  ];
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final glowCenter = Offset(size.width * 0.52, size.height * 0.78);
-    final glowRadius = size.width * 0.6;
-    final glowShader = RadialGradient(
-      colors: [accentColor.withValues(alpha: 0.18), Colors.transparent],
-      stops: const [0.0, 1.0],
-    ).createShader(Rect.fromCircle(center: glowCenter, radius: glowRadius));
-    canvas.drawCircle(glowCenter, glowRadius, Paint()..shader = glowShader);
-
-    final starPaint = Paint()..color = Colors.white.withValues(alpha: 0.85);
-    final accentPaint = Paint()..color = accentColor.withValues(alpha: 0.55);
-
-    for (var i = 0; i < _stars.length; i++) {
-      final offset = Offset(
-        _stars[i].dx * size.width,
-        _stars[i].dy * size.height,
-      );
-      final radius = 1.5 + (i % 3) * 0.8;
-      canvas.drawCircle(offset, radius, i.isEven ? accentPaint : starPaint);
-    }
-
-    final sparklePaint = Paint()..color = Colors.white.withValues(alpha: 0.35);
-    final accentSparklePaint = Paint()
-      ..color = accentColor.withValues(alpha: 0.25);
-    for (var i = 0; i < _sparkles.length; i++) {
-      final offset = Offset(
-        _sparkles[i].dx * size.width,
-        _sparkles[i].dy * size.height,
-      );
-      final radius = 0.6 + (i % 2) * 0.35;
-      canvas.drawCircle(
-        offset,
-        radius,
-        i.isEven ? sparklePaint : accentSparklePaint,
-      );
-    }
-
-    final arcPaint = Paint()
-      ..color = accentColor.withValues(alpha: 0.25)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    final rect = Rect.fromCircle(
-      center: Offset(size.width * 0.52, size.height * 0.78),
-      radius: size.width * 0.55,
-    );
-    canvas.drawArc(rect, 0.1, 1.1, false, arcPaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _StarfieldPainter oldDelegate) {
-    return oldDelegate.accentColor != accentColor;
-  }
-}
 
 Future<void> _showHistorySheet(BuildContext context, ChatController chat) {
   return showModalBottomSheet<void>(
@@ -769,23 +595,22 @@ class _Header extends StatelessWidget {
     required this.onMenuPressed,
     required this.onModelPressed,
     required this.onSharePressed,
-    required this.appMode,
-    required this.onModeChanged,
     required this.collapseModelChip,
-    this.onLocalModelsPressed,
   });
 
   final SessionController session;
   final VoidCallback onMenuPressed;
   final VoidCallback onModelPressed;
   final VoidCallback onSharePressed;
-  final AppMode appMode;
-  final ValueChanged<AppMode> onModeChanged;
   final bool collapseModelChip;
-  final VoidCallback? onLocalModelsPressed;
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final titleStyle = theme.textTheme.displaySmall ??
+        theme.textTheme.headlineMedium ??
+        const TextStyle(fontSize: 28);
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
       child: Column(
@@ -797,27 +622,15 @@ class _Header extends StatelessWidget {
               children: [
                 Align(
                   alignment: Alignment.centerLeft,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.ios_share_rounded),
-                        tooltip: 'Paylaş',
-                        onPressed: onSharePressed,
-                      ),
-                      if (appMode == AppMode.star &&
-                          onLocalModelsPressed != null)
-                        IconButton(
-                          icon: const Icon(Icons.download_rounded),
-                          tooltip: 'Modelleri yönet',
-                          onPressed: onLocalModelsPressed,
-                        ),
-                    ],
+                  child: IconButton(
+                    icon: const Icon(Icons.ios_share_rounded),
+                    tooltip: 'Paylaş',
+                    onPressed: onSharePressed,
                   ),
                 ),
                 Align(
                   alignment: Alignment.center,
-                  child: _ModeToggle(mode: appMode, onChanged: onModeChanged),
+                  child: Text('orbit', style: titleStyle),
                 ),
                 Align(
                   alignment: Alignment.centerRight,
@@ -834,9 +647,6 @@ class _Header extends StatelessWidget {
           AnimatedBuilder(
             animation: session,
             builder: (context, _) {
-              if (appMode != AppMode.orbit) {
-                return const SizedBox.shrink();
-              }
               final selected = session.selectedModel;
               final label = selected ?? 'Model seç';
               final isLoading = session.isLoadingModels;
@@ -860,74 +670,6 @@ class _Header extends StatelessWidget {
             },
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _ModeToggle extends StatelessWidget {
-  const _ModeToggle({required this.mode, required this.onChanged});
-
-  final AppMode mode;
-  final ValueChanged<AppMode> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _ModeToggleItem(
-          label: 'orbit',
-          isActive: mode == AppMode.orbit,
-          onTap: () => onChanged(AppMode.orbit),
-        ),
-        const SizedBox(width: 12),
-        _ModeToggleItem(
-          label: 'star',
-          isActive: mode == AppMode.star,
-          onTap: () => onChanged(AppMode.star),
-        ),
-      ],
-    );
-  }
-}
-
-class _ModeToggleItem extends StatelessWidget {
-  const _ModeToggleItem({
-    required this.label,
-    required this.isActive,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool isActive;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final baseStyle =
-        theme.textTheme.displaySmall ??
-        theme.textTheme.headlineMedium ??
-        const TextStyle(fontSize: 28);
-    final activeColor = baseStyle.color ?? theme.colorScheme.onSurface;
-    final inactiveColor = activeColor.withValues(alpha: 0.35);
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedDefaultTextStyle(
-        duration: const Duration(milliseconds: 220),
-        style: baseStyle.copyWith(
-          color: isActive ? activeColor : inactiveColor,
-          fontSize: isActive
-              ? baseStyle.fontSize
-              : (baseStyle.fontSize ?? 28) - 4,
-          letterSpacing: isActive ? 1.2 : 0.8,
-        ),
-        child: AnimatedOpacity(
-          duration: const Duration(milliseconds: 220),
-          opacity: isActive ? 1 : 0.45,
-          child: Text(label),
-        ),
       ),
     );
   }
@@ -1222,7 +964,7 @@ class _ConnectionReminder extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Orbit modunda sohbet başlatmak için LM Studio sunucusunu bağla veya star moduna geç.',
+                  'Orbit modunda sohbet başlatmak için LM Studio sunucusunu bağla.',
                   style: theme.textTheme.bodySmall,
                 ),
               ],
@@ -1232,374 +974,6 @@ class _ConnectionReminder extends StatelessWidget {
           FilledButton.tonal(
             onPressed: onConnect,
             child: const Text('Bağlantıyı ayarla'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _LocalModelBanner extends StatelessWidget {
-  const _LocalModelBanner({required this.controller, required this.onManage});
-
-  final LocalModelController controller;
-  final VoidCallback onManage;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) {
-        final active = controller.activeModelState;
-        final hasInstalled = controller.models.any(
-          (model) => model.status == LocalModelStatus.installed,
-        );
-        final headline = active != null
-            ? 'Aktif model: ${active.descriptor.name}'
-            : (hasInstalled
-                  ? 'Bir modeli etkinleştir'
-                  : 'Yerel model bulunmuyor');
-        final description = active != null
-            ? 'Yerel sohbet bu model üzerinden çalışır.'
-            : (hasInstalled
-                  ? 'İndirilen modellerden birini seçerek hemen kullan.'
-                  : 'Modelleri indirerek star modunda sohbet edebilirsin.');
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest.withValues(
-              alpha: theme.brightness == Brightness.dark ? 0.35 : 0.75,
-            ),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.35),
-            ),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(headline, style: theme.textTheme.titleSmall),
-                    const SizedBox(height: 6),
-                    Text(
-                      description,
-                      style: theme.textTheme.bodySmall,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              FilledButton.tonal(
-                onPressed: onManage,
-                child: const Text('Modelleri yönet'),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _StarModePanel extends StatelessWidget {
-  const _StarModePanel({required this.controller, required this.onActivate});
-
-  final LocalModelController controller;
-  final Future<void> Function(String id) onActivate;
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) {
-        final models = controller.models;
-        if (models.isEmpty) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final maxHeight = constraints.maxHeight;
-            final panelHeight = maxHeight.isFinite
-                ? maxHeight.clamp(320.0, 640.0)
-                : 520.0;
-            return SizedBox(
-              height: panelHeight,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      IconButton(
-                        tooltip: 'Kapat',
-                        onPressed: () => Navigator.of(context).maybePop(),
-                        icon: const Icon(Icons.arrow_back_rounded),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Yerel modeller',
-                          style: Theme.of(context).textTheme.headlineMedium,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: ListView.separated(
-                      itemCount: models.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 16),
-                      padding: const EdgeInsets.fromLTRB(4, 20, 4, 24),
-                      itemBuilder: (context, index) {
-                        final model = models[index];
-                        final isActive =
-                            controller.activeModelState?.descriptor.id ==
-                            model.descriptor.id;
-                        return _StarModelTile(
-                          state: model,
-                          isActive: isActive,
-                          onActivate: onActivate,
-                          onDownload: () =>
-                              controller.startDownload(model.descriptor.id),
-                          onCancel: () =>
-                              controller.cancelDownload(model.descriptor.id),
-                          onRemove: () =>
-                              controller.removeModel(model.descriptor.id),
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-class _StarModelTile extends StatelessWidget {
-  const _StarModelTile({
-    required this.state,
-    required this.isActive,
-    required this.onActivate,
-    required this.onDownload,
-    required this.onCancel,
-    required this.onRemove,
-  });
-
-  final LocalModelState state;
-  final bool isActive;
-  final Future<void> Function(String id) onActivate;
-  final Future<void> Function() onDownload;
-  final Future<void> Function() onCancel;
-  final Future<void> Function() onRemove;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final descriptor = state.descriptor;
-    Future<void> activate() => onActivate(descriptor.id);
-
-    Widget actionWidget;
-    switch (state.status) {
-      case LocalModelStatus.notInstalled:
-        actionWidget = FilledButton(
-          onPressed: () async {
-            final messenger = ScaffoldMessenger.of(context);
-            try {
-              await onDownload();
-            } catch (error) {
-              messenger
-                ..hideCurrentSnackBar()
-                ..showSnackBar(
-                  SnackBar(
-                    content: Text('İndirme başarısız: $error'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-            }
-          },
-          child: const Text('İndir'),
-        );
-        break;
-      case LocalModelStatus.downloading:
-        final percent = (state.progress * 100).clamp(0, 100).round();
-        final indicatorValue = state.progress.clamp(0.0, 1.0);
-        actionWidget = FilledButton.tonal(
-          onPressed: () async {
-            final messenger = ScaffoldMessenger.of(context);
-            try {
-              await onCancel();
-              messenger
-                ..hideCurrentSnackBar()
-                ..showSnackBar(
-                  const SnackBar(
-                    content: Text('İndirme iptal edildi.'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-            } catch (error) {
-              messenger
-                ..hideCurrentSnackBar()
-                ..showSnackBar(
-                  SnackBar(
-                    content: Text('İptal edilemedi: $error'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-            }
-          },
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  value: indicatorValue,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Text('$percent% • İptal'),
-            ],
-          ),
-        );
-        break;
-      case LocalModelStatus.installed:
-        actionWidget = Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            isActive
-                ? FilledButton.icon(
-                    onPressed: null,
-                    icon: const Icon(Icons.check_rounded),
-                    label: const Text('Aktif'),
-                  )
-                : FilledButton(
-                    onPressed: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await activate();
-                      messenger
-                        ..hideCurrentSnackBar()
-                        ..showSnackBar(
-                          SnackBar(
-                            content: Text('${descriptor.name} aktif edildi.'),
-                            behavior: SnackBarBehavior.floating,
-                            duration: const Duration(seconds: 2),
-                          ),
-                        );
-                    },
-                    child: const Text('Kullan'),
-                  ),
-            OutlinedButton.icon(
-              onPressed: () async {
-                final messenger = ScaffoldMessenger.of(context);
-                try {
-                  await onRemove();
-                  messenger
-                    ..hideCurrentSnackBar()
-                    ..showSnackBar(
-                      SnackBar(
-                        content: Text('${descriptor.name} kaldırıldı.'),
-                        behavior: SnackBarBehavior.floating,
-                        duration: const Duration(seconds: 2),
-                      ),
-                    );
-                } catch (error) {
-                  messenger
-                    ..hideCurrentSnackBar()
-                    ..showSnackBar(
-                      SnackBar(
-                        content: Text('Model kaldırılamadı: $error'),
-                        behavior: SnackBarBehavior.floating,
-                      ),
-                    );
-                }
-              },
-              icon: const Icon(Icons.delete_outline_rounded),
-              label: const Text('Kaldır'),
-            ),
-          ],
-        );
-        break;
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(
-          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.3),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            descriptor.name,
-                            style: theme.textTheme.titleMedium,
-                          ),
-                        ),
-                        if (isActive)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 4,
-                            ),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primary.withValues(
-                                alpha: 0.12,
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              'Aktif',
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: theme.colorScheme.primary,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${descriptor.sizeLabel} • ${descriptor.license}',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
-              actionWidget,
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(descriptor.description, style: theme.textTheme.bodyMedium),
-          const SizedBox(height: 8),
-          Text(
-            descriptor.sourceUrl,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.primary,
-            ),
           ),
         ],
       ),
@@ -2153,299 +1527,3 @@ class _HeaderMenuItem {
 }
 
 enum _HeaderMenuAction { history, connection, newChat, settings }
-
-class SettingsSheet extends StatefulWidget {
-  const SettingsSheet({
-    super.key,
-    required this.controller,
-    required this.sessionController,
-  });
-
-  final SettingsController controller;
-  final SessionController sessionController;
-
-  @override
-  State<SettingsSheet> createState() => _SettingsSheetState();
-}
-
-class _SettingsSheetState extends State<SettingsSheet> {
-  static const _accentOptions = <Color>[
-    Color(0xFF6C6CFF),
-    Color(0xFF4DD0E1),
-    Color(0xFFFF7043),
-    Color(0xFF7E57C2),
-    Color(0xFF26C6DA),
-  ];
-
-  static const _fontOptions = <String>['Outfit', 'Inter', 'Space Grotesk'];
-
-  late final TextEditingController _manualHostController;
-  late final TextEditingController _manualPortController;
-  bool _isSavingConnection = false;
-
-  @override
-  void initState() {
-    super.initState();
-    final session = widget.sessionController;
-    _manualHostController = TextEditingController(text: session.host ?? '');
-    _manualPortController = TextEditingController(
-      text: session.port.toString(),
-    );
-  }
-
-  @override
-  void dispose() {
-    _manualHostController.dispose();
-    _manualPortController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _saveManualConnection() async {
-    final messenger = ScaffoldMessenger.of(context);
-    final host = _manualHostController.text.trim();
-    final portValue = int.tryParse(_manualPortController.text.trim());
-    if (host.isEmpty || portValue == null) {
-      messenger
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          const SnackBar(
-            content: Text('Geçerli bir IP ve port giriniz.'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      return;
-    }
-    setState(() => _isSavingConnection = true);
-    await widget.sessionController.setConnection(host: host, port: portValue);
-    if (!mounted) return;
-    setState(() => _isSavingConnection = false);
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        const SnackBar(
-          content: Text('Bağlantı güncellendi'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-  }
-
-  Future<void> _openLink(String url) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final launched = await launchUrlString(
-      url,
-      mode: LaunchMode.externalApplication,
-    );
-    if (!launched && mounted) {
-      messenger
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            content: Text('Bağlantı açılamadı: $url'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final controller = widget.controller;
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) {
-        return SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(
-                child: Container(
-                  height: 4,
-                  width: 48,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.outlineVariant,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back_rounded),
-                    tooltip: 'Kapat',
-                    onPressed: () => Navigator.of(context).maybePop(),
-                  ),
-                  Expanded(
-                    child: Text(
-                      'Ayarlar',
-                      style: theme.textTheme.headlineMedium,
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                  const SizedBox(width: 48),
-                ],
-              ),
-              const SizedBox(height: 24),
-              Text('Tema modu', style: theme.textTheme.titleMedium),
-              const SizedBox(height: 12),
-              SegmentedButton<ThemeMode>(
-                segments: const [
-                  ButtonSegment(value: ThemeMode.system, label: Text('Sistem')),
-                  ButtonSegment(value: ThemeMode.light, label: Text('Açık')),
-                  ButtonSegment(value: ThemeMode.dark, label: Text('Koyu')),
-                ],
-                selected: {controller.themeMode},
-                onSelectionChanged: (value) =>
-                    controller.setThemeMode(value.first),
-              ),
-              const SizedBox(height: 24),
-              Text('Vurgu rengi', style: theme.textTheme.titleMedium),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: _accentOptions
-                    .map(
-                      (color) => GestureDetector(
-                        onTap: () => controller.setAccentColor(color),
-                        child: Container(
-                          width: 46,
-                          height: 46,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: color,
-                            border: Border.all(
-                              color: controller.accentColor == color
-                                  ? theme.colorScheme.onPrimary
-                                  : Colors.transparent,
-                              width: 3,
-                            ),
-                          ),
-                        ),
-                      ),
-                    )
-                    .toList(),
-              ),
-              const SizedBox(height: 24),
-              Text('Gövde fontu', style: theme.textTheme.titleMedium),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: controller.bodyFont,
-                decoration: InputDecoration(
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                ),
-                items: _fontOptions
-                    .map(
-                      (font) =>
-                          DropdownMenuItem(value: font, child: Text(font)),
-                    )
-                    .toList(),
-                onChanged: (value) {
-                  if (value != null) {
-                    controller.setBodyFont(value);
-                  }
-                },
-              ),
-              const SizedBox(height: 24),
-              Text('Metin boyutu', style: theme.textTheme.titleMedium),
-              Slider(
-                value: controller.textScale,
-                min: 0.9,
-                max: 1.3,
-                divisions: 8,
-                label: controller.textScale.toStringAsFixed(2),
-                onChanged: (value) => controller.setTextScale(value),
-              ),
-              const SizedBox(height: 24),
-              Text('Yanıt sıcaklığı', style: theme.textTheme.titleMedium),
-              Slider(
-                value: widget.sessionController.temperature,
-                min: 0.1,
-                max: 1.5,
-                divisions: 14,
-                label: widget.sessionController.temperature.toStringAsFixed(2),
-                onChanged: (value) =>
-                    widget.sessionController.updateTemperature(value),
-              ),
-              const SizedBox(height: 24),
-              Text('Manuel bağlantı', style: theme.textTheme.titleMedium),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    flex: 3,
-                    child: TextField(
-                      controller: _manualHostController,
-                      decoration: const InputDecoration(
-                        labelText: 'IP adresi',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 1,
-                    child: TextField(
-                      controller: _manualPortController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: 'Port',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton(
-                  onPressed: _isSavingConnection ? null : _saveManualConnection,
-                  child: _isSavingConnection
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Bağlantıyı kaydet'),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SwitchListTile.adaptive(
-                title: const Text('Shader arka planı kullan'),
-                value: controller.useShader,
-                onChanged: (value) => controller.setShaderEnabled(value),
-              ),
-              const SizedBox(height: 24),
-              Divider(
-                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.4),
-              ),
-              const SizedBox(height: 16),
-              Text('Hakkında', style: theme.textTheme.titleMedium),
-              const SizedBox(height: 12),
-              Text(
-                'Orbit, Fatih tarafından geliştirildi. Daha fazlası için GitHub profilini ziyaret edebilirsin.',
-                style: theme.textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 12),
-              FilledButton.tonalIcon(
-                onPressed: () => _openLink('https://github.com/fatih'),
-                icon: const Icon(Icons.link_rounded),
-                label: const Text('github.com/fatih'),
-              ),
-              const SizedBox(height: 12),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}

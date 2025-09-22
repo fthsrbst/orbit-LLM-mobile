@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
@@ -8,7 +9,6 @@ import '../models/chat_message.dart';
 import '../models/chat_session.dart';
 import '../services/chat_storage_service.dart';
 import '../services/lm_studio_service.dart';
-import '../services/local_inference_service.dart';
 import 'session_controller.dart';
 
 enum ChatFlowState { idle, thinking, generating }
@@ -18,13 +18,11 @@ class ChatController extends ChangeNotifier {
     this._service,
     this._sessionController,
     this._storage,
-    this._localInference,
   );
 
   final LmStudioService _service;
   final SessionController _sessionController;
   final ChatStorageService _storage;
-  final LocalInferenceService _localInference;
 
   final List<ChatMessage> _messages = <ChatMessage>[];
   bool _isSending = false;
@@ -72,32 +70,9 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> sendMessage(
-    String content, {
-    bool forceOffline = false,
-    String? offlineModelName,
-    String? offlineModelPath,
-    String? offlineModelId,
-  }) async {
+  Future<void> sendMessage(String content) async {
     final trimmed = content.trim();
     if (trimmed.isEmpty) {
-      return;
-    }
-
-    if (forceOffline) {
-      if (offlineModelPath == null || offlineModelId == null) {
-        _error =
-            'Yerel model bulunamadı. Modelleri yönet bölümünden bir model indirip etkinleştir.';
-        notifyListeners();
-        return;
-      }
-      await _sendOffline(
-        userContent: trimmed,
-        modelName: offlineModelName ?? 'Yerel model',
-        modelId: offlineModelId,
-        modelPath: offlineModelPath,
-        temperature: _sessionController.temperature,
-      );
       return;
     }
 
@@ -210,69 +185,6 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> _sendOffline({
-    required String userContent,
-    required String modelName,
-    required String modelId,
-    required String modelPath,
-    required double temperature,
-  }) async {
-    final userMessage = ChatMessage(role: ChatRole.user, content: userContent);
-    _messages.add(userMessage);
-    _isSending = true;
-    _error = null;
-    _flowState = ChatFlowState.thinking;
-    notifyListeners();
-
-    final conversation = List<ChatMessage>.from(_messages);
-
-    try {
-      await _localInference.ensureModelLoaded(
-        modelId: modelId,
-        modelPath: modelPath,
-        temperature: temperature,
-      );
-
-      final placeholder = ChatMessage(role: ChatRole.assistant, content: '');
-      _messages.add(placeholder);
-      final assistantIndex = _messages.length - 1;
-      _flowState = ChatFlowState.generating;
-      notifyListeners();
-
-      final buffer = StringBuffer();
-      await for (final chunk in _localInference.generateResponse(
-        history: conversation,
-      )) {
-        buffer.write(chunk);
-        _messages[assistantIndex] = _messages[assistantIndex].copyWith(
-          content: buffer.toString(),
-        );
-        notifyListeners();
-      }
-
-      final finalContent = buffer.toString().trimRight();
-      _messages[assistantIndex] = _messages[assistantIndex].copyWith(
-        content: finalContent.isEmpty
-            ? '($modelName herhangi bir yanıt üretmedi)'
-            : finalContent,
-      );
-      await _persistSession();
-    } catch (err) {
-      _error = 'Yerel yanıt oluşturulamadı: $err';
-      while (_messages.isNotEmpty && _messages.last.role != ChatRole.user) {
-        _messages.removeLast();
-      }
-      if (_messages.isNotEmpty && _messages.last.role == ChatRole.user) {
-        _messages.removeLast();
-      }
-      notifyListeners();
-    } finally {
-      _isSending = false;
-      _flowState = ChatFlowState.idle;
-      notifyListeners();
-    }
-  }
-
   Future<void> loadSession(String sessionId) async {
     final sessions = await _storage.loadSessions();
     final target = sessions.firstWhere(
@@ -369,11 +281,5 @@ class ChatController extends ChangeNotifier {
       createdAt: _createdAt ?? DateTime.now(),
       messages: List<ChatMessage>.from(_messages),
     );
-  }
-
-  @override
-  void dispose() {
-    unawaited(_localInference.dispose());
-    super.dispose();
   }
 }
