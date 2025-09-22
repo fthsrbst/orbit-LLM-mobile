@@ -22,8 +22,8 @@ Modern, yerel-öncelikli bir Flutter sohbet istemcisi. iOS ve Android’de çal�
 ### Kurulum
 
 ```bash
-git clone https://github.com/fthsrbst/project.git
-cd project/lm_local_chat
+git clone https://github.com/fthsrbst/orbit-local-chat.git
+cd lm_local_chat
 flutter pub get
 ```
 
